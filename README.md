@@ -24,24 +24,39 @@ Gratti exists because the two big BI tools leave the same gaps: Power BI overwhe
 npm install
 npm run dev      # local dev server
 npm test         # unit tests (Vitest)
-npm run build    # static production build in dist/
+npm run build    # one self-contained file at dist/index.html
 ```
 
-The app is a static site. Deploy `dist/` anywhere that serves files.
+`npm run build` inlines the whole module graph and the CSS back into a single
+HTML file. Open `dist/index.html` straight off disk, drop it on any host, or
+embed it in an iframe. Nothing else ships with it.
+
+The source `index.html` loads `src/main.js` as an ES module, so it needs a
+server. Opening the source file directly leaves you with a blank board and an
+empty panel, because the browser refuses to load a module over `file://`. Use
+`npm run dev` while working, and the built file for everything else.
 
 ## Architecture
 
-The app currently lives in `index.html` as a self-contained page (the prototype grew up in a chat-based workflow where a single file was the right shape). The migration to modules is underway, extraction-first:
+The page script is `src/main.js`, loaded as an ES module. Pure logic lives in
+`src/core/`, shared state in `src/state.js`, and persistence in
+`src/storage.js` and `src/persist.js`. Everything outside `main.js` is
+unit-tested. `main.js` is being split down further; `MIGRATION.md` tracks it.
 
 ```
+index.html         markup and CSS, plus the module tag
+src/main.js        page script: DOM, renderers, panel
+src/state.js       shared state, setters, derived schema helpers
+src/storage.js     key/value store: host bridge, localStorage, memory
+src/persist.js     snapshot shape, saved dashboards, autosave
 src/core/          pure logic, no DOM, fully unit-tested
   format.js        number/string formatting, colour math
   types.js         column type inference, numeric coercion
   dates.js         date parsing, period rollup, prior-period keys
   pipeline.js      grouping, aggregation, sorting, topN, stacking, analytics
   filter.js        the row predicate: filters + cross-filter + slicers
-test/              Vitest suites for everything in src/core
-legacy/            frozen copy of the last single-file prototype
+test/              Vitest suites for everything outside main.js
+legacy/            frozen single-file prototype, pre-migration
 public/brand/      logo, favicon, lockup assets
 ```
 

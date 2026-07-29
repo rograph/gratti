@@ -10,35 +10,69 @@ out into tested modules. Never break `index.html` mid-step.
       format, types, dates, pipeline (aggregate/analytics), filter.
 - [x] 37 unit tests over the extracted core. All passing.
 - [x] Brand assets in `public/brand/`. Prototype frozen in `legacy/`.
+- [x] Import swap. The inline `<script>` body moved to `src/main.js`, which
+      imports from `./core/*.js`. Every duplicated copy is gone, so the
+      tested modules are now the only implementation the page runs.
+      `index.html` is markup and CSS plus one module tag.
 
-## Next: swap the inline copies for imports
+### How the swap was done
 
-The inline `<script>` in `index.html` still contains its own copies of the
-extracted functions. Replace them by loading the page script as a module:
+The core takes explicit `(rows, spec, cols)` where the page code read
+globals. Rather than rewrite ~40 call sites, `main.js` defines three thin
+adapters that supply the current rows and schema:
 
-1. Move the inline script body to `src/main.js`.
-2. At the top of `src/main.js`, import from `./core/*.js` and delete the
-   inline duplicates (`fmt`, `fmtVal`, `esc`, `tint`, `mix`, `inferType`,
-   `toNum`, `parseDate`, `dateKey`, `prevKey`, `keyOf`, `reduceRows`,
-   `bucket`, `aggregate`, `alignedSeries`, `analyticsOpts` math).
-3. Adapt call sites: extracted functions take explicit `(rows, spec, cols)`
-   parameters instead of reading globals. `rows()` becomes a thin wrapper
-   over `filterRows(DATA, {filters, cross, slicers, ...})`.
-4. `<script src=...>` becomes `<script type="module" src="/src/main.js">`.
-   CDN libraries stay as classic scripts for now; they attach to `window`.
-5. Run the app manually against `legacy/gratti-v5-prototype.html` and click
-   through: load sample, one of each visual, slicer, save, reload, import.
+```js
+const bucket        = spec => bucketRows(rows(spec.x), spec, COLS);
+const aggregate     = spec => aggregateRows(rows(spec.x), spec, COLS);
+const alignedSeries = (spec, labels, col, agg) =>
+  alignedSeriesFor(rows(spec.x), spec, COLS, labels, col, agg);
+```
 
-## Then: split main.js
+`rows()` is now a wrapper over `filterRows(DATA, {...})`, and `colType(n)`
+over `colType(COLS, n)`. `analyticsOpts()` calls `analytics()` for the math
+and keeps colour, label, and dash in the renderer where they belong.
 
-- `state.js`      DATA/COLS/BLOCKS/FILTERS/CROSS/SEL + mutation helpers
-- `persist.js`    snapshot/restore, storage fallbacks, save index
-- `renderers/`    chart2d.js, table.js, geo.js, three.js, card.js, slicer.js,
-                  staticblocks.js
-- `pane.js`       the right-hand properties panel
-- `nl.js`         askAI prompt + offline keyword parser + spec clean()
+CDN libraries stay classic scripts in `<head>`; they attach to `window` and
+run before the deferred module. No inline `on*` handlers existed, so module
+scope broke nothing.
+
+One consequence: the source `index.html` can no longer be opened straight off
+disk. A browser refuses to load a module over `file://`, so nothing runs and
+you get the toolbar with an empty board and an empty panel. `npm run build`
+now inlines everything back into one file, which restores that workflow and
+doubles as the static export.
+
+## In progress: split main.js
+
+`src/main.js` was 1,654 lines after the import swap. Three modules are out:
+
+- [x] `state.js`    DATA/COLS/BLOCKS/FILTERS/CROSS/SEL + setters + derived
+      schema helpers (colTypeOf, numCols, catCols, dateCols, filterCols)
+- [x] `storage.js`  the three-tier key/value store and its key names
+- [x] `persist.js`  snapshot shape, the save index, autosave read/write
+- [ ] `renderers/`  chart2d.js, table.js, geo.js, three.js, card.js,
+                    slicer.js, staticblocks.js
+- [ ] `pane.js`     the right-hand properties panel
+- [ ] `nl.js`       askAI prompt + offline keyword parser + spec clean()
 
 Keep each under ~300 lines. Pipeline changes require a test first.
+
+### The state contract
+
+`state.js` exports `let` bindings and setters. Reads use the binding directly,
+since an ES live binding always shows the current value. Writes must go
+through a setter, because an imported binding cannot be assigned to. Vite
+fails the build on a stray assignment, so this is enforced, not a convention.
+
+```js
+import { CROSS, setCrossFilter } from './state.js';
+if (CROSS) setCrossFilter(null);        // read the binding, call the setter
+```
+
+`persist.js` stays free of the DOM: `snapshot(title, theme)` takes the deck
+title and the live theme as arguments rather than reaching for them, which is
+what makes it testable. `restore()` is still in `main.js`, since rebuilding
+the board is a DOM job.
 
 ## Phase 2 backlog (hardening)
 
@@ -52,5 +86,6 @@ Keep each under ~300 lines. Pipeline changes require a test first.
 ## Phase 3 (the business feature)
 
 - [ ] Read-only viewer mode (no pane, no toolbar, no editing)
-- [ ] Static export: one self-contained HTML file for iframe embedding
+- [x] Static export: one self-contained HTML file for iframe embedding.
+      `vite-plugin-singlefile`, wired into the default build.
 - [ ] "Hide Gratti branding" toggle in themes
