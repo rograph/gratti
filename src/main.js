@@ -2,21 +2,12 @@
    Gratti v5
    ========================================================== */
 
-import { fmt, fmtVal, esc, tint, mix } from './core/format.js';
+import { fmt, esc, tint } from './core/format.js';
 import { inferType, toNum } from './core/types.js';
-import { dateKey, prevKey } from './core/dates.js';
-import { filterRows } from './core/filter.js';
-import {
-  is3D, isStack, isGeo,
-  reduceRows,
-  bucket as bucketRows,
-  aggregate as aggregateRows,
-  alignedSeries as alignedSeriesFor,
-  analytics
-} from './core/pipeline.js';
+import { is3D, isStack, isGeo } from './core/pipeline.js';
 import {
   DATA, COLS, BLOCKS, FILTERS, CROSS, SEL, FILE, PANE_MODE, AI_STATE, dragId,
-  setData, setCols, setBlocks, setFilters, setCrossFilter, setSel, setFile,
+  find, charts, setBlocks, setFilters, setCrossFilter, setSel,
   setPaneMode, setAiState, setDragId, setDataset, clearFilters, nextId,
   colTypeOf as colType, numCols, catCols, dateCols, filterCols
 } from './state.js';
@@ -24,34 +15,17 @@ import {
   snapshot as buildSnapshot, listSaves, putSave, getSave, removeSave,
   readAutosave, writeAutosave
 } from './persist.js';
-
-const LIBS = typeof Chart !== 'undefined' && typeof Papa !== 'undefined';
-const PLOT = typeof Plotly !== 'undefined';
-const DLAB = typeof ChartDataLabels !== 'undefined';
-
-/* ---------- themes ---------- */
-const THEMES = {
-  indigo:{name:'Indigo', accent:'#3D3AF5',
-    pal:['#3D3AF5','#00BFA6','#9B5DE5','#FFB627','#FF5D73','#00A3FF','#5D6BFF','#FF8A4C']},
-  teal:{name:'Teal', accent:'#0E9A8A',
-    pal:['#0E9A8A','#2E7DD1','#7BC950','#F4A261','#E76F63','#5C6F7E','#37B3A0','#C2A83E']},
-  plum:{name:'Plum', accent:'#7B3FD4',
-    pal:['#7B3FD4','#E5487F','#26A0A8','#F2A43B','#4B5CC4','#8FB339','#C55FA6','#E0714A']},
-  slate:{name:'Slate', accent:'#334155',
-    pal:['#334155','#2E7DD1','#0E9A8A','#C2853A','#B4535F','#6B7B8C','#4C6B8A','#8A9BAA']},
-  amber:{name:'Amber', accent:'#C9721A',
-    pal:['#C9721A','#2F6F8F','#7A9E3F','#B03F55','#5C5470','#D9A441','#3F8F7A','#A8552E']},
-  ink:{name:'Ink', accent:'#0B1220',
-    pal:['#0B1220','#3D3AF5','#00BFA6','#FFB627','#FF5D73','#7C889D','#5D6BFF','#00A3FF']}
-};
-let THEME = {key:'indigo', accent:THEMES.indigo.accent, pal:[...THEMES.indigo.pal], logo:null};
-let PAL = [...THEME.pal];
+import { LIBS, PLOT, DLAB } from './libs.js';
+import { THEMES, THEME, PAL, setTheme, setPal } from './theme.js';
+import { rows } from './query.js';
+import { registerActions } from './actions.js';
+import { draw, renderStatic, guessLat, guessLon } from './renderers/index.js';
 
 function applyTheme(){
   const r=document.documentElement.style;
   r.setProperty('--accent', THEME.accent);
   r.setProperty('--accent-soft', tint(THEME.accent, .93));
-  PAL = THEME.pal && THEME.pal.length ? THEME.pal : THEMES.indigo.pal;
+  setPal(THEME.pal && THEME.pal.length ? THEME.pal : THEMES.indigo.pal);
   const brand=$('#brand');
   brand.innerHTML = THEME.logo
     ? `<img class="brandlogo" src="${THEME.logo}" alt="">`
@@ -95,59 +69,6 @@ const SORTS=[['auto','Automatic'],['value-desc','Value, high to low'],['value-as
 const COLS_N=12, GAP=16, SPAN_MIN=3, SPAN_MAX=12, H_MIN=120, H_MAX=760;
 
 const $=s=>document.querySelector(s);
-
-if(LIBS){
-  Chart.defaults.font.family="'Instrument Sans', system-ui, sans-serif";
-  Chart.defaults.font.size=11.5;
-  Chart.defaults.color='#7C889D';
-  if(DLAB){ Chart.register(ChartDataLabels); Chart.defaults.plugins.datalabels.display=false; }
-  /* reference lines: target, average, min, max, and a least-squares trend */
-  Chart.register({
-    id:'analytics',
-    afterDatasetsDraw(chart,args,opts){
-      const list=(opts&&opts.lines)||[];
-      if(!list.length&&!(opts&&opts.trend)) return;
-      const {ctx,chartArea:ca,scales}=chart;
-      const horiz=chart.options.indexAxis!=='y';
-      const vs=horiz?scales.y:scales.x;
-      if(!vs) return;
-      ctx.save();
-      list.forEach(ln=>{
-        if(ln.value==null||!isFinite(ln.value)) return;
-        const p=vs.getPixelForValue(ln.value);
-        ctx.strokeStyle=ln.color; ctx.lineWidth=1.6;
-        ctx.setLineDash(ln.dash||[5,4]);
-        ctx.beginPath();
-        if(horiz){ ctx.moveTo(ca.left,p); ctx.lineTo(ca.right,p); }
-        else{ ctx.moveTo(p,ca.top); ctx.lineTo(p,ca.bottom); }
-        ctx.stroke(); ctx.setLineDash([]);
-        if(!ln.label) return;
-        ctx.font="500 10px 'JetBrains Mono', monospace";
-        const w=ctx.measureText(ln.label).width+12;
-        ctx.fillStyle=ln.color;
-        if(horiz){
-          const x=ca.right-w-2, y=Math.max(ca.top+1,Math.min(ca.bottom-15,p-16));
-          ctx.beginPath(); ctx.roundRect(x,y,w,14,4); ctx.fill();
-          ctx.fillStyle='#fff'; ctx.fillText(ln.label,x+6,y+10.5);
-        }else{
-          ctx.beginPath(); ctx.roundRect(p+3,ca.top+2,w,14,4); ctx.fill();
-          ctx.fillStyle='#fff'; ctx.fillText(ln.label,p+9,ca.top+12.5);
-        }
-      });
-      const tr=opts&&opts.trend;
-      if(tr&&tr.a!=null&&horiz){
-        const xs=scales.x;
-        ctx.strokeStyle=tr.color; ctx.lineWidth=2; ctx.setLineDash([7,5]);
-        ctx.beginPath();
-        const n=tr.n-1;
-        ctx.moveTo(xs.getPixelForValue(0), vs.getPixelForValue(tr.b));
-        ctx.lineTo(xs.getPixelForValue(n), vs.getPixelForValue(tr.a*n+tr.b));
-        ctx.stroke(); ctx.setLineDash([]);
-      }
-      ctx.restore();
-    }
-  });
-}
 
 /* ---------- storage (artifact storage -> localStorage -> memory) ---------- */
 
@@ -209,14 +130,8 @@ function renderChips(){
     FILTERS.splice(+e.target.dataset.fd,1); renderChips(); recalc(); });
   const x=$('#xCross'); if(x) x.onclick=()=>{ setCrossFilter(null); renderChips(); recalc(); };
 }
-/* the one row predicate: filter strip + cross-filter + slicer blocks */
-function rows(skipCol,skipSlicer){
-  return filterRows(DATA,{
-    filters:FILTERS, cross:CROSS, skipCol,
-    slicers:BLOCKS.filter(b=>b.kind==='slicer'&&b.id!==skipSlicer).map(b=>b.spec)
-  });
-}
-const recalc=(exceptId)=>{ renderKPIs(); redrawAll(exceptId); scheduleAutosave(); };
+function recalc(exceptId){ renderKPIs(); redrawAll(exceptId); scheduleAutosave(); }
+registerActions({ setCross, recalc, scheduleAutosave, refreshBlock });
 
 /* ---------- KPI strip ---------- */
 function renderKPIs(){
@@ -259,20 +174,8 @@ function drawSpark(id,metric,ci){
 }
 
 /* ==========================================================
-   DATA PIPELINE — adapters over src/core/pipeline.js
-   The core is pure and takes (rows, spec, cols). These wrappers
-   supply the page's current rows and schema so the call sites
-   below read the same as they always did.
-   ========================================================== */
-const bucket=spec=>bucketRows(rows(spec.x),spec,COLS);
-const aggregate=spec=>aggregateRows(rows(spec.x),spec,COLS);
-const alignedSeries=(spec,labels,col,agg)=>alignedSeriesFor(rows(spec.x),spec,COLS,labels,col,agg);
-
-/* ==========================================================
    BLOCKS
    ========================================================== */
-const find=id=>BLOCKS.find(b=>b.id===id);
-const charts=()=>BLOCKS.filter(b=>b.kind==='chart');
 
 function defaults(spec){
   const roomy=['line','area','surface3d','bar3d','table','combo'].includes(spec.type)||!!spec.series;
@@ -372,141 +275,6 @@ function shell(id,kind,spec){
       <div class="plot-wrap" id="w-${id}" style="height:${spec.h}px"></div>${handles}`;
 }
 
-function renderStatic(id){
-  const b=find(id), w=document.getElementById('w-'+id); if(!b||!w) return;
-  if(b.kind==='card') return renderCard(id,b,w);
-  if(b.kind==='slicer') return renderSlicer(id,b,w);
-  if(b.kind==='text'){
-    w.innerHTML=`<div class="tb ${b.spec.align==='center'?'center':''}">
-      <div class="tb-head" contenteditable="true" spellcheck="false" data-th="${id}">${esc(b.spec.heading||'')}</div>
-      <div class="tb-body" contenteditable="true" spellcheck="false" data-tx="${id}">${esc(b.spec.body||'')}</div></div>`;
-    w.querySelector(`[data-th="${id}"]`).addEventListener('blur',e=>{ b.spec.heading=e.target.textContent; scheduleAutosave(); });
-    w.querySelector(`[data-tx="${id}"]`).addEventListener('blur',e=>{ b.spec.body=e.target.textContent; scheduleAutosave(); });
-  }else{
-    w.className='plot-wrap imgbox'+(b.spec.fit==='cover'?' cover':'');
-    w.style.height=b.spec.h+'px';
-    w.innerHTML=b.spec.src?`<img src="${b.spec.src}" alt="${esc(b.spec.alt||'')}">`
-      :`<div class="ph">No image yet.<br>Add one from the panel on the right.</div>`;
-  }
-}
-
-/* ---------- card visual ---------- */
-function cardValue(spec,dataset){
-  const rs=dataset||rows();
-  if(spec.agg==='count') return rs.length;
-  return reduceRows(rs,spec.y,spec.agg);
-}
-function renderCard(id,b,w){
-  const s=b.spec;
-  w.className='plot-wrap'; w.style.height=s.h+'px';
-  const val=cardValue(s);
-  const label=s.title||`${s.agg==='count'?'Records':s.y||'Value'}`;
-  const scale=Math.max(22,Math.min(52,Math.round(s.h*0.26)));
-
-  let sub='', meter='';
-  if(s.target!=null&&isFinite(s.target)){
-    const pct=s.target?val/s.target*100:0;
-    const hit=val>=s.target;
-    sub=`<span class="cv-pill ${hit?'cv-good':'cv-bad'}">${pct.toFixed(0)}% of target</span>
-         <span>target ${fmtVal(s.target,s.numfmt)}</span>`;
-    meter=`<div class="cv-meter"><i style="width:${Math.max(2,Math.min(100,pct))}%;background:${hit?'#1F9D63':'#DB4457'}"></i></div>`;
-  }else if(s.compare==='share'){
-    const all=cardValue(s,DATA);
-    const pct=all?val/all*100:100;
-    sub=`<span class="cv-pill cv-flat">${pct.toFixed(1)}% of all rows</span>`;
-  }else if(s.compare==='prev'){
-    const dc=dateCols()[0];
-    if(dc){
-      const keys=[...new Set(rows().map(r=>dateKey(r[dc.name],'month')))].sort();
-      const last=keys[keys.length-1], prevK=last?prevKey(last,'month'):null;
-      const cur=cardValue(s,rows().filter(r=>dateKey(r[dc.name],'month')===last));
-      const was=prevK?cardValue(s,rows().filter(r=>dateKey(r[dc.name],'month')===prevK)):null;
-      if(was!=null&&was!==0){
-        const d=(cur-was)/Math.abs(was)*100;
-        const cls=d>0.5?'cv-good':d<-0.5?'cv-bad':'cv-flat';
-        sub=`<span class="cv-pill ${cls}">${d>0?'▲':d<0?'▼':'•'} ${Math.abs(d).toFixed(1)}%</span>
-             <span>${last} vs ${prevK}</span>`;
-      }
-    }
-  }
-
-  w.innerHTML=`<div class="cardviz">
-      <div class="cv-lab">${esc(label)}</div>
-      <div class="cv-val" style="font-size:${scale}px">${fmtVal(val,s.numfmt)}</div>
-      ${sub?`<div class="cv-sub">${sub}</div>`:''}
-      ${meter}
-      ${s.spark?`<div class="cv-spark"><canvas id="cs-${id}"></canvas></div>`:''}
-    </div>`;
-  if(s.spark) cardSpark(id,s);
-}
-function cardSpark(id,s){
-  const el=document.getElementById('cs-'+id); if(!el||!LIBS) return;
-  const dc=dateCols()[0], d=rows(), b=new Map();
-  if(dc) d.forEach(r=>{const k=dateKey(r[dc.name],'month'); if(!b.has(k)) b.set(k,[]); b.get(k).push(r);});
-  else { const size=Math.max(1,Math.ceil(d.length/16));
-    d.forEach((r,i)=>{const k=Math.floor(i/size); if(!b.has(k)) b.set(k,[]); b.get(k).push(r);}); }
-  const keys=[...b.keys()].sort((x,y)=>String(x).localeCompare(String(y),undefined,{numeric:true}));
-  const vals=keys.map(k=>s.agg==='count'?b.get(k).length:reduceRows(b.get(k),s.y,s.agg));
-  if(vals.length<2) return;
-  const col=(s.target!=null&&isFinite(s.target))
-    ? (cardValue(s)>=s.target?'#1F9D63':'#DB4457') : PAL[0];
-  const ctx=el.getContext('2d');
-  const g=ctx.createLinearGradient(0,0,0,40);
-  g.addColorStop(0,col+'33'); g.addColorStop(1,col+'00');
-  new Chart(el,{type:'line',
-    data:{labels:keys,datasets:[{data:vals,borderColor:col,borderWidth:2,fill:true,
-      backgroundColor:g,tension:.4,pointRadius:0}]},
-    options:{responsive:true,maintainAspectRatio:false,animation:false,
-      plugins:{legend:{display:false},datalabels:DLAB?{display:false}:undefined,analytics:{lines:[]},
-        tooltip:{enabled:true,backgroundColor:'#0B1220',padding:8,cornerRadius:7,displayColors:false,
-          bodyFont:{family:"'JetBrains Mono', monospace",size:10.5},
-          callbacks:{label:c=>fmtVal(c.parsed.y,s.numfmt)}}},
-      scales:{x:{display:false},y:{display:false}}}});
-}
-
-/* ---------- slicer visual ---------- */
-function renderSlicer(id,b,w){
-  const s=b.spec;
-  w.className='plot-wrap'; w.style.height=s.h+'px';
-  if(!s.col||!DATA.length){ w.innerHTML='<p class="hintline">Pick a field in the panel on the right.</p>'; return; }
-  const others=rows(null,id);
-  const counts=new Map();
-  others.forEach(r=>{ const k=String(r[s.col]); counts.set(k,(counts.get(k)||0)+1); });
-  const all=[...new Set(DATA.map(r=>String(r[s.col])))].filter(v=>v!==''&&v!=='null');
-  all.sort((a,z)=>a.localeCompare(z,undefined,{numeric:true}));
-  const q=(s.query||'').toLowerCase();
-  const show=q?all.filter(v=>v.toLowerCase().includes(q)):all;
-  const tick=`<svg viewBox="0 0 12 12" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.3 4.8 8.7 9.5 3.4"/></svg>`;
-
-  w.innerHTML=`<div class="slicer">
-      ${all.length>8?`<input class="sl-search" id="q-${id}" placeholder="Search ${esc(s.col)}" value="${esc(s.query||'')}">`:''}
-      <div class="sl-list">
-        ${show.map(v=>`<div class="sl-item ${s.picked.includes(v)?'on':''}" data-v="${esc(v)}">
-          <span class="box">${tick}</span><span class="lbl">${esc(v)}</span>
-          ${s.counts?`<span class="cnt">${(counts.get(v)||0).toLocaleString()}</span>`:''}</div>`).join('')}
-        ${show.length?'':'<p class="hintline">No matches.</p>'}
-      </div>
-      <div class="sl-foot">
-        <button data-all="1">Select all</button>
-        <button data-none="1">Clear</button>
-        <span class="n">${s.picked.length?s.picked.length+' of '+all.length:'all'}</span>
-      </div></div>`;
-
-  w.querySelectorAll('[data-v]').forEach(el=>el.onclick=e=>{
-    e.stopPropagation();
-    const v=el.dataset.v, i=s.picked.indexOf(v);
-    i>=0?s.picked.splice(i,1):s.picked.push(v);
-    renderSlicer(id,b,w); recalc(id);
-  });
-  const qa=w.querySelector('[data-all]'), qn=w.querySelector('[data-none]');
-  if(qa) qa.onclick=e=>{ e.stopPropagation(); s.picked=[...all]; renderSlicer(id,b,w); recalc(id); };
-  if(qn) qn.onclick=e=>{ e.stopPropagation(); s.picked=[]; renderSlicer(id,b,w); recalc(id); };
-  const qi=w.querySelector('#q-'+id);
-  if(qi) qi.oninput=e=>{ s.query=e.target.value;
-    const pos=e.target.selectionStart; renderSlicer(id,b,w);
-    const n=w.querySelector('#q-'+id); if(n){ n.focus(); n.setSelectionRange(pos,pos); } };
-}
-
 function select(id){
   setSel(id); setPaneMode('block');
   document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel',c.id==='k-'+id));
@@ -570,7 +338,8 @@ function startResize(id,mode,e,handle){
   handle.addEventListener('pointerup',end);
   handle.addEventListener('pointercancel',end);
 }
-const refreshBlock=id=>{ const b=find(id); if(!b) return; b.kind==='chart'?draw(id,b.spec):renderStatic(id); };
+/* hoisted, not a const arrow: registerActions() runs before this point */
+function refreshBlock(id){ const b=find(id); if(!b) return; b.kind==='chart'?draw(id,b.spec):renderStatic(id); }
 
 function wireDrag(id){
   const card=document.getElementById('k-'+id);
@@ -622,318 +391,6 @@ function starters(){
   if(c[0]&&n[0]) o.push(`top 5 ${c[0]} by ${n[0]}`);
   if(n[0]&&n[1]) o.push(`${n[0]} and ${n[1]} as a combo chart by ${c[0]||d[0]}`);
   return o.slice(0,4);
-}
-
-/* ==========================================================
-   RENDERERS
-   ========================================================== */
-function draw(id,spec){
-  const wrap=document.getElementById('w-'+id); if(!wrap) return;
-  const prev=Chart.getChart('cv-'+id); if(prev) prev.destroy();
-  if(PLOT) try{Plotly.purge('pl-'+id);}catch(e){}
-  wrap.className='plot-wrap'+(spec.type==='table'?' scrolls':'');
-  wrap.style.height=spec.h+'px';
-  wrap.innerHTML='';
-  if(spec.type==='table') return drawTable(id,spec,wrap);
-  if(isGeo(spec.type)) return drawGeo(id,spec,wrap);
-  if(is3D(spec.type)) return draw3D(id,spec,wrap);
-  draw2D(id,spec,wrap);
-}
-
-/* ---------- table ---------- */
-function drawTable(id,spec,wrap){
-  const {labels,names,matrix}=aggregate(spec);
-  const multi=names.length>1||names[0]!=='_';
-  const heads=[spec.x, ...(multi?names:[spec.y||'Count']), ...(multi?['Total']:[])];
-  const rowsOut=labels.map((l,li)=>{
-    const vals=names.map(( _,si)=>matrix[si][li]);
-    const tot=vals.reduce((a,b)=>a+b,0);
-    return {label:l, vals, tot};
-  });
-  const sk=spec.tableSort;
-  if(sk){
-    const dir=sk.dir==='asc'?1:-1;
-    if(sk.col===0) rowsOut.sort((a,b)=>dir*String(a.label).localeCompare(String(b.label),undefined,{numeric:true}));
-    else if(sk.col===heads.length-1&&multi) rowsOut.sort((a,b)=>dir*(a.tot-b.tot));
-    else rowsOut.sort((a,b)=>dir*((a.vals[sk.col-1]||0)-(b.vals[sk.col-1]||0)));
-  }
-  const totals=names.map((_,si)=>rowsOut.reduce((s,r)=>s+(r.vals[si]||0),0));
-  const grand=totals.reduce((a,b)=>a+b,0);
-  const ar=i=>sk&&sk.col===i?`<span class="ar">${sk.dir==='asc'?'▲':'▼'}</span>`:'';
-  const lit=l=>!CROSS||CROSS.col!==spec.x||String(CROSS.val)===String(l);
-
-  /* conditional formatting scales, computed across every numeric cell */
-  const cf=spec.cf||'none';
-  const flat=rowsOut.flatMap(r=>r.vals).filter(v=>isFinite(v));
-  const lo=flat.length?Math.min(...flat):0, hi=flat.length?Math.max(...flat):1;
-  const span=(hi-lo)||1;
-  const cell=v=>{
-    if(cf==='none'||!isFinite(v)) return `<td>${fmtVal(v,spec.numfmt)}</td>`;
-    if(cf==='bars'){
-      const pct=Math.max(0,Math.min(100,((v-Math.min(0,lo))/(hi-Math.min(0,lo)||1))*100));
-      return `<td class="cf"><span class="bar" style="width:calc(${pct}% - 12px);background:${PAL[0]}"></span>${fmtVal(v,spec.numfmt)}</td>`;
-    }
-    if(cf==='scale'){
-      const t=(v-lo)/span;
-      return `<td style="background:${mix('#FFFFFF',PAL[0],t*0.42)}">${fmtVal(v,spec.numfmt)}</td>`;
-    }
-    const mid=(lo+hi)/2;
-    const up=v>=mid;
-    return `<td><span class="arrow" style="color:${up?'#1F9D63':'#DB4457'}">${up?'▲':'▼'}</span>${fmtVal(v,spec.numfmt)}</td>`;
-  };
-
-  wrap.innerHTML=`<table class="dt">
-    <thead><tr>${heads.map((h,i)=>`<th data-sc="${i}">${esc(h)}${ar(i)}</th>`).join('')}</tr></thead>
-    <tbody>${rowsOut.map(r=>`<tr data-lbl="${esc(r.label)}" class="${CROSS&&CROSS.col===spec.x&&lit(r.label)?'sel-row':''}">
-      <td>${esc(r.label)}</td>
-      ${r.vals.map(v=>cell(v)).join('')}
-      ${multi?`<td>${fmtVal(r.tot,spec.numfmt)}</td>`:''}</tr>`).join('')}</tbody>
-    <tfoot><tr><td>Total</td>
-      ${totals.map(v=>`<td>${fmtVal(v,spec.numfmt)}</td>`).join('')}
-      ${multi?`<td>${fmtVal(grand,spec.numfmt)}</td>`:''}</tr></tfoot></table>`;
-
-  wrap.querySelectorAll('[data-sc]').forEach(th=>th.onclick=e=>{
-    e.stopPropagation();
-    const col=+th.dataset.sc, cur=spec.tableSort;
-    spec.tableSort = cur&&cur.col===col ? {col,dir:cur.dir==='asc'?'desc':'asc'} : {col,dir:col===0?'asc':'desc'};
-    draw(id,spec); scheduleAutosave();
-  });
-  wrap.querySelectorAll('[data-lbl]').forEach(tr=>tr.onclick=e=>{
-    e.stopPropagation(); setCross(spec.x,tr.dataset.lbl);
-  });
-}
-
-/* ---------- 2D ---------- */
-/* ---------- analytics lines ---------- */
-/* the math lives in core; colour, label, and dash stay here */
-const LINE_STYLE={
-  target:{color:'#0B1220',label:'Target',dash:[5,4]},
-  avg:{color:'#5B6A7D',label:'Avg',dash:[4,4]},
-  min:{color:'#C0334A',label:'Min',dash:[2,3]},
-  max:{color:'#1F7A4C',label:'Max',dash:[2,3]}
-};
-function analyticsOpts(spec,matrix,fmtMode){
-  const {lines,trend}=analytics(spec,matrix);
-  return {
-    lines:lines.map(l=>{
-      const st=LINE_STYLE[l.kind];
-      return {value:l.value,color:st.color,label:`${st.label} ${fmtVal(l.value,fmtMode)}`,dash:st.dash};
-    }),
-    trend:trend?{...trend,color:'#8A93A3'}:null
-  };
-}
-
-function draw2D(id,spec,wrap){
-  wrap.innerHTML=`<canvas id="cv-${id}"></canvas>`;
-  const {labels,names,matrix,compare}=aggregate(spec);
-  const pie=['pie','doughnut'].includes(spec.type);
-  const stacked=isStack(spec.type);
-  const base = spec.type==='hbar'||stacked||spec.type==='combo' ? 'bar'
-             : spec.type==='area' ? 'line' : spec.type;
-  const clickable=['bar','hbar','pie','doughnut','stack','stack100','combo'].includes(spec.type)&&!spec.series;
-  const lit=l=>!CROSS||CROSS.col!==spec.x||String(CROSS.val)===String(l);
-  const el=document.getElementById('cv-'+id), ctx=el.getContext('2d');
-  const fmtMode=spec.type==='stack100'?'pct1':spec.numfmt;
-
-  const datasets=names.map((sn,i)=>{
-    const col=PAL[i%PAL.length];
-    let bg;
-    if(pie) bg=labels.map((l,j)=>PAL[j%PAL.length]+(lit(l)?'':'30'));
-    else if(spec.type==='area'){
-      const g=ctx.createLinearGradient(0,0,0,Math.max(120,spec.h));
-      g.addColorStop(0,col+'40'); g.addColorStop(1,col+'02'); bg=g;
-    }
-    else if(spec.type==='radar') bg=col+'2A';
-    else if(spec.target!=null&&spec.targetColor&&!spec.series)
-      bg=matrix[i].map((v,j)=>(v>=spec.target?'#1F9D63':'#DB4457')+(lit(labels[j])?'':'30'));
-    else if(clickable) bg=labels.map(l=>col+(lit(l)?'':'30'));
-    else bg=col;
-    return {label:sn==='_'?(spec.y||'count'):sn, data:matrix[i], backgroundColor:bg, borderColor:col,
-      borderWidth:['line','area','radar'].includes(spec.type)?2.6:0,
-      fill:spec.type==='area'||spec.type==='radar', tension:.38,
-      pointRadius:labels.length>18?0:3, pointBackgroundColor:col, pointBorderColor:'#fff', pointBorderWidth:1.5,
-      pointHoverRadius:5, borderRadius:['bar','hbar','combo'].includes(spec.type)?6:(stacked?3:0),
-      maxBarThickness:54, categoryPercentage:.72, barPercentage:.88,
-      order:2, yAxisID:'y'};
-  });
-
-  if(compare){
-    datasets.push({label:'Prior period', data:compare, type:'line', borderColor:'#9AA6B6',
-      borderWidth:2, borderDash:[5,4], fill:false, pointRadius:0, tension:.35, order:0, yAxisID:'y'});
-  }
-  if(spec.type==='combo'&&spec.y2){
-    const line=alignedSeries(spec,labels,spec.y2,spec.agg2||'sum');
-    datasets.push({label:spec.y2, data:line, type:'line', borderColor:PAL[3%PAL.length],
-      backgroundColor:PAL[3%PAL.length], borderWidth:2.8, fill:false, tension:.35,
-      pointRadius:labels.length>18?0:3.5, pointBackgroundColor:PAL[3%PAL.length],
-      pointBorderColor:'#fff', pointBorderWidth:1.5, order:0, yAxisID:'y1'});
-  }
-
-  const scales = (pie||spec.type==='radar') ? {} : {
-    x:{stacked, grid:{display:false}, border:{display:false},
-       ticks:{maxRotation:38,autoSkipPadding:14,padding:6,font:{size:11}}},
-    y:{stacked, grid:{color:'#F0F3F7',drawTicks:false}, border:{display:false},
-       ticks:{callback:v=>fmtVal(v,fmtMode),padding:10,maxTicksLimit:6,font:{size:11}},
-       grace:'8%', max:spec.type==='stack100'?100:undefined}
-  };
-  if(spec.type==='combo'&&spec.y2)
-    scales.y1={position:'right',grid:{display:false},border:{display:false},
-      ticks:{callback:v=>fmtVal(v,spec.numfmt2||'auto'),padding:8,maxTicksLimit:5,font:{size:11},
-      color:PAL[3%PAL.length]},grace:'12%'};
-
-  new Chart(el,{type:base,data:{labels,datasets},
-    options:{
-      responsive:true, maintainAspectRatio:false,
-      indexAxis:spec.type==='hbar'?'y':'x',
-      layout:{padding:{top:spec.labels?14:4,right:4,left:0,bottom:0}},
-      interaction:{mode:'index',intersect:false},
-      onClick:(e,els,ch)=>{ if(clickable&&els.length) setCross(spec.x,ch.data.labels[els[0].index]); },
-      onHover:(e,els)=>{ e.native.target.style.cursor=(clickable&&els.length)?'pointer':'default'; },
-      plugins:{
-        legend:{display:pie||datasets.length>1, position:pie?'right':'top', align:'start',
-          labels:{boxWidth:8,boxHeight:8,usePointStyle:true,pointStyle:'circle',padding:14,font:{size:11.5}}},
-        tooltip:{backgroundColor:'#0B1220',padding:12,cornerRadius:9,titleFont:{size:12,weight:'600'},
-          bodyFont:{family:"'JetBrains Mono', monospace",size:11.5},boxWidth:8,boxHeight:8,boxPadding:5,
-          callbacks:{label:c=>{
-            const v=c.parsed.y??c.parsed.r??c.parsed;
-            const m=c.dataset.yAxisID==='y1'?(spec.numfmt2||'auto'):fmtMode;
-            return ` ${c.dataset.label}: ${fmtVal(v,m)}`;
-          }}},
-        datalabels:DLAB?{display:spec.labels?'auto':false,
-          anchor:pie?'center':(stacked?'center':'end'), align:pie?'center':(stacked?'center':'end'), offset:3,
-          color:(pie||stacked)?'#fff':'#3A4457', font:{family:"'JetBrains Mono', monospace",size:10,weight:'500'},
-          formatter:(v,c)=>fmtVal(v, c.dataset.yAxisID==='y1'?(spec.numfmt2||'auto'):fmtMode)}:undefined,
-        analytics:analyticsOpts(spec,matrix,fmtMode)      },
-      scales
-    }});
-
-  if(clickable){
-    const f=document.createElement('span'); f.className='readout'; f.style.cssText='opacity:.85;left:20px;right:auto;bottom:8px;background:none;color:#7C889D;padding:0';
-    f.textContent=CROSS&&CROSS.col===spec.x?'click the same bar to clear':'click a bar to filter everything';
-    wrap.parentElement.appendChild(f);
-    setTimeout(()=>{ try{f.remove();}catch(e){} },4000);
-  }
-}
-
-/* ---------- 3D ---------- */
-function box(cx,cy,h,w,ci){
-  const x0=cx-w/2,x1=cx+w/2,y0=cy-w/2,y1=cy+w/2;
-  return {type:'mesh3d',x:[x0,x1,x1,x0,x0,x1,x1,x0],y:[y0,y0,y1,y1,y0,y0,y1,y1],z:[0,0,0,0,h,h,h,h],
-    i:[0,0,4,4,0,0,1,1,2,2,3,3],j:[1,2,5,6,1,5,2,6,3,7,0,4],k:[2,3,6,7,5,4,6,5,7,6,4,7],
-    color:PAL[ci%PAL.length],opacity:.93,flatshading:true,hoverinfo:'skip',showscale:false};
-}
-/* ---------- maps ---------- */
-const LAT_HINT=/^(lat|latitude|y_?coord)$/i, LON_HINT=/^(lon|lng|long|longitude|x_?coord)$/i;
-const guessLat=()=>(COLS.find(c=>LAT_HINT.test(c.name))||{}).name||null;
-const guessLon=()=>(COLS.find(c=>LON_HINT.test(c.name))||{}).name||null;
-
-function drawGeo(id,spec,wrap){
-  if(!PLOT){ wrap.innerHTML='<p class="hintline">Map engine failed to load. Refresh to retry.</p>'; return; }
-  wrap.innerHTML=`<div class="plot" id="pl-${id}"></div>`;
-  const el=document.getElementById('pl-'+id);
-  const layout={margin:{l:0,r:0,t:0,b:0},paper_bgcolor:'rgba(0,0,0,0)',
-    font:{family:"'Instrument Sans', sans-serif",size:10,color:'#7C889D'},
-    hoverlabel:{bgcolor:'#0B1220',bordercolor:'#0B1220',
-      font:{family:"'JetBrains Mono', monospace",size:11,color:'#fff'}},
-    geo:{scope:spec.geoScope||'usa', showland:true, landcolor:'#F4F6F9',
-      subunitcolor:'#DDE3EB', countrycolor:'#DDE3EB', coastlinecolor:'#DDE3EB',
-      showlakes:true, lakecolor:'#EDF0F5', showframe:false, bgcolor:'rgba(0,0,0,0)',
-      fitbounds:spec.type==='map'?'locations':false}};
-  const cfg={displayModeBar:true,displaylogo:false,responsive:true,
-    modeBarButtonsToRemove:['toImage','sendDataToCloud','select2d','lasso2d']};
-
-  if(spec.type==='choropleth'){
-    const g=bucket({...spec,series:null});
-    const labels=[...g.keys()];
-    const vals=labels.map(l=>reduceRows(g.get(l).get('_')||[],spec.y,spec.agg==='pct'?'sum':spec.agg));
-    return Plotly.newPlot(el,[{type:'choropleth',
-      locationmode:spec.geoMode||'USA-states', locations:labels, z:vals,
-      colorscale:[[0,tint(PAL[0],.92)],[.55,PAL[0]],[1,mix(PAL[0],'#0B1220',.55)]],
-      marker:{line:{color:'#FFFFFF',width:1}},
-      colorbar:{thickness:9,len:.7,outlinewidth:0,tickfont:{size:9}},
-      hovertemplate:`%{location}<br>${esc(spec.y||'count')}: %{z:,.4~s}<extra></extra>`}],layout,cfg);
-  }
-
-  const lat=spec.lat||guessLat(), lon=spec.lon||guessLon();
-  if(!lat||!lon){
-    wrap.innerHTML=`<p class="hintline" style="padding:14px">A bubble map needs latitude and longitude fields.
-      Pick them in the panel on the right, or switch to Region map and use a state or country field.</p>`;
-    return;
-  }
-  /* one bubble per group, sized by the measure and positioned at the group's mean point */
-  const g=bucket({...spec,series:null});
-  const pts=[...g.keys()].map(k=>{
-    const rs=g.get(k).get('_')||[];
-    const v=reduceRows(rs,spec.y,spec.agg==='pct'?'sum':spec.agg);
-    return {k, v,
-      lat:rs.reduce((s,r)=>s+toNum(r[lat]),0)/(rs.length||1),
-      lon:rs.reduce((s,r)=>s+toNum(r[lon]),0)/(rs.length||1)};
-  }).filter(p=>isFinite(p.lat)&&isFinite(p.lon)&&(p.lat||p.lon));
-  if(!pts.length){ wrap.innerHTML='<p class="hintline" style="padding:14px">No usable coordinates in those fields.</p>'; return; }
-  const max=Math.max(...pts.map(p=>Math.abs(p.v)))||1;
-
-  Plotly.newPlot(el,[{type:'scattergeo', mode:'markers',
-    lat:pts.map(p=>p.lat), lon:pts.map(p=>p.lon),
-    text:pts.map(p=>`${p.k}<br>${fmtVal(p.v,spec.numfmt)}`),
-    hovertemplate:'%{text}<extra></extra>',
-    marker:{size:pts.map(p=>10+Math.sqrt(Math.abs(p.v)/max)*36),
-      color:pts.map(p=>p.v), colorscale:[[0,tint(PAL[0],.55)],[1,PAL[0]]],
-      opacity:.82, line:{color:'#FFFFFF',width:1.6}, showscale:false}}],layout,cfg);
-
-  el.on('plotly_click',ev=>{
-    const p=ev.points&&ev.points[0];
-    if(p!=null&&pts[p.pointIndex]) setCross(spec.x,pts[p.pointIndex].k);
-  });
-}
-
-function draw3D(id,spec,wrap){
-  if(!PLOT){ wrap.innerHTML='<p class="hintline">3D engine failed to load. Refresh to retry.</p>'; return; }
-  wrap.innerHTML=`<div class="plot" id="pl-${id}"></div>`;
-  const el=document.getElementById('pl-'+id);
-  const layout={margin:{l:0,r:0,t:4,b:0},paper_bgcolor:'rgba(0,0,0,0)',
-    font:{family:"'Instrument Sans', sans-serif",size:10,color:'#7C889D'},showlegend:false,
-    hoverlabel:{bgcolor:'#0B1220',bordercolor:'#0B1220',font:{family:"'JetBrains Mono', monospace",size:11,color:'#fff'}},
-    scene:{aspectmode:'manual',aspectratio:{x:2,y:1,z:.8},
-      xaxis:{gridcolor:'#E4E8EF',zerolinecolor:'#E4E8EF',showspikes:false,title:{text:spec.x,font:{size:10}}},
-      yaxis:{gridcolor:'#E4E8EF',zerolinecolor:'#E4E8EF',showspikes:false,title:{text:'',font:{size:10}}},
-      zaxis:{gridcolor:'#E4E8EF',zerolinecolor:'#E4E8EF',showspikes:false,title:{text:spec.y||'count',font:{size:10}}},
-      camera:{eye:{x:1.72,y:-1.88,z:.72}}}};
-  const cfg={displayModeBar:true,displaylogo:false,responsive:true,
-    modeBarButtonsToRemove:['toImage','sendDataToCloud','hoverClosest3d']};
-
-  if(spec.type==='scatter3d'){
-    const d=rows(), z=spec.z||spec.y;
-    layout.scene.aspectratio={x:1,y:1,z:.88};
-    layout.scene.yaxis.title.text=spec.y||''; layout.scene.zaxis.title.text=z||'';
-    return Plotly.newPlot(el,[{type:'scatter3d',mode:'markers',
-      x:d.map(r=>toNum(r[spec.x])),y:d.map(r=>toNum(r[spec.y])),z:d.map(r=>toNum(r[z])),
-      hovertemplate:`${esc(spec.x)}: %{x}<br>${esc(spec.y||'')}: %{y}<br>${esc(z||'')}: %{z}<extra></extra>`,
-      marker:{size:4.4,opacity:.82,color:d.map(r=>toNum(r[z])),
-        colorscale:[[0,PAL[0]],[.5,PAL[2]],[1,PAL[3]]],showscale:false}}],layout,cfg);
-  }
-  const {labels,names,matrix,cut}=aggregate(spec);
-  if(spec.type==='surface3d'){
-    layout.scene.yaxis.title.text=spec.series||'';
-    return Plotly.newPlot(el,[{type:'surface',z:matrix,x:labels,
-      y:names.map(s=>s==='_'?(spec.y||'value'):s),
-      colorscale:[[0,tint(PAL[0],.9)],[.5,PAL[0]],[1,'#0B1220']],showscale:false,
-      hovertemplate:'%{x}<br>%{y}<br>%{z:.4s}<extra></extra>',
-      contours:{z:{show:true,usecolormap:true,project:{z:true}}}}],layout,cfg);
-  }
-  const step=2.2,traces=[],hx=[],hy=[],hz=[],ht=[];
-  matrix.forEach((row,si)=>row.forEach((v,li)=>{
-    traces.push(box(li,si*step,v,.55,si));
-    hx.push(li);hy.push(si*step);hz.push(v);
-    ht.push(`${labels[li]}${names[si]==='_'?'':' · '+names[si]}<br>${fmtVal(v,spec.numfmt)}`);
-  }));
-  traces.push({type:'scatter3d',mode:'markers',x:hx,y:hy,z:hz,
-    marker:{size:9,opacity:.01,color:'#000'},text:ht,hovertemplate:'%{text}<extra></extra>'});
-  layout.scene.aspectratio={x:2.1,y:Math.max(.55,names.length*.42),z:.82};
-  layout.scene.xaxis.ticktext=labels; layout.scene.xaxis.tickvals=labels.map((_,i)=>i);
-  layout.scene.yaxis.ticktext=names.map(s=>s==='_'?'':s);
-  layout.scene.yaxis.tickvals=names.map((_,i)=>i*step);
-  layout.scene.yaxis.title.text=spec.series||'';
-  Plotly.newPlot(el,traces,layout,cfg);
 }
 
 /* ==========================================================
@@ -1305,7 +762,7 @@ function wireThemePane(){
   const body=$('#paneBody');
   body.querySelectorAll('[data-theme]').forEach(b=>b.onclick=()=>{
     const t=THEMES[b.dataset.theme];
-    THEME={...THEME,key:b.dataset.theme,accent:t.accent,pal:[...t.pal]};
+    setTheme({...THEME,key:b.dataset.theme,accent:t.accent,pal:[...t.pal]});
     applyTheme(); renderPane(); scheduleAutosave();
   });
   const pick=body.querySelector('#accentPick');
@@ -1365,7 +822,7 @@ function restore(snap){
   killAll();
   setDataset({data:snap.data, cols:snap.cols, file:snap.file});
   setFilters(snap.filters||[]); setCrossFilter(null); setSel(null);
-  THEME=snap.theme||THEME;
+  setTheme(snap.theme||THEME);
   $('#deckTitle').textContent=snap.title||'Untitled dashboard';
   $('#deckMeta').textContent=DATA.length?`${DATA.length.toLocaleString()} rows · ${COLS.length} fields`:'no data loaded';
   $('#addFilterBtn').style.display=DATA.length?'inline-flex':'none';

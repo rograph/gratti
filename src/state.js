@@ -46,6 +46,11 @@ let uid = 0;
 /** Block ids are unique per session, not stable across saves. */
 export const nextId = () => 'b' + (++uid);
 
+/* ---------- derived block lookups ---------- */
+
+export const find = id => BLOCKS.find(b => b.id === id);
+export const charts = () => BLOCKS.filter(b => b.kind === 'chart');
+
 /* ---------- derived schema ---------- */
 
 export const colTypeOf = n => (COLS.find(c => c.name === n) || {}).type;

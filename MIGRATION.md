@@ -44,18 +44,23 @@ doubles as the static export.
 
 ## In progress: split main.js
 
-`src/main.js` was 1,654 lines after the import swap. Three modules are out:
+`src/main.js` was 1,654 lines after the import swap. It is now 1,079.
 
-- [x] `state.js`    DATA/COLS/BLOCKS/FILTERS/CROSS/SEL + setters + derived
-      schema helpers (colTypeOf, numCols, catCols, dateCols, filterCols)
-- [x] `storage.js`  the three-tier key/value store and its key names
-- [x] `persist.js`  snapshot shape, the save index, autosave read/write
-- [ ] `renderers/`  chart2d.js, table.js, geo.js, three.js, card.js,
-                    slicer.js, staticblocks.js
-- [ ] `pane.js`     the right-hand properties panel
-- [ ] `nl.js`       askAI prompt + offline keyword parser + spec clean()
+- [x] `state.js`      DATA/COLS/BLOCKS/FILTERS/CROSS/SEL, setters, block
+                      lookups, derived schema helpers
+- [x] `storage.js`    the three-tier key/value store and its key names
+- [x] `persist.js`    snapshot shape, the save index, autosave read/write
+- [x] `libs.js`       which CDN libraries loaded, plus the Chart.js bootstrap
+- [x] `theme.js`      the palette registry and the live theme
+- [x] `query.js`      `rows()`, the pipeline adapters, analytics line styling
+- [x] `actions.js`    the three page actions renderers call back into
+- [x] `renderers/`    chart2d, table, geo, three, card, slicer, staticblocks,
+                      and an index.js that dispatches on visual type
+- [ ] `pane.js`       the right-hand properties panel
+- [ ] `nl.js`         askAI prompt + offline keyword parser + spec clean()
 
-Keep each under ~300 lines. Pipeline changes require a test first.
+Every module outside `main.js` is under 100 lines. Pipeline changes require a
+test first.
 
 ### The state contract
 
@@ -73,6 +78,28 @@ if (CROSS) setCrossFilter(null);        // read the binding, call the setter
 title and the live theme as arguments rather than reaching for them, which is
 what makes it testable. `restore()` is still in `main.js`, since rebuilding
 the board is a DOM job.
+
+### Why actions.js exists
+
+Clicking a bar has to refresh every block, and that refresh has to call back
+into the renderers. Left alone that is a circular import. `actions.js` holds
+four one-line pass-throughs, and `main.js` registers the real functions once
+at startup:
+
+```js
+registerActions({ setCross, recalc, scheduleAutosave, refreshBlock });
+```
+
+All four must be hoisted function declarations, not `const` arrows, or the
+registration hits the temporal dead zone. That bites at runtime, not at build
+time, so it is worth remembering when adding a fifth.
+
+### Watch for missing imports
+
+A stray identifier inside a module is a runtime `ReferenceError`, and neither
+Vite nor Vitest will catch it, because nothing imports the broken path until
+someone clicks. Run ESLint with `no-undef` and the CDN globals declared after
+any move of this size. That is how the two mistakes in this step were found.
 
 ## Phase 2 backlog (hardening)
 

@@ -38,17 +38,21 @@ empty panel, because the browser refuses to load a module over `file://`. Use
 
 ## Architecture
 
-The page script is `src/main.js`, loaded as an ES module. Pure logic lives in
-`src/core/`, shared state in `src/state.js`, and persistence in
-`src/storage.js` and `src/persist.js`. Everything outside `main.js` is
-unit-tested. `main.js` is being split down further; `MIGRATION.md` tracks it.
+The page script is `src/main.js`, loaded as an ES module. It is being split
+down; `MIGRATION.md` tracks what is left. Everything already out of it is
+either unit-tested or pure DOM work with no logic worth testing.
 
 ```
 index.html         markup and CSS, plus the module tag
-src/main.js        page script: DOM, renderers, panel
-src/state.js       shared state, setters, derived schema helpers
+src/main.js        what is left: blocks, the panel, natural language, boot
+src/state.js       shared state, setters, derived lookups
+src/query.js       the row predicate and the pipeline adapters
 src/storage.js     key/value store: host bridge, localStorage, memory
 src/persist.js     snapshot shape, saved dashboards, autosave
+src/theme.js       palette registry and the live theme
+src/libs.js        CDN library detection and the Chart.js bootstrap
+src/actions.js     the page actions renderers call back into
+src/renderers/     one module per visual family, plus a dispatcher
 src/core/          pure logic, no DOM, fully unit-tested
   format.js        number/string formatting, colour math
   types.js         column type inference, numeric coercion
