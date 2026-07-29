@@ -1,5 +1,5 @@
 /** Bubble maps and region maps, both through Plotly. */
-import { COLS } from '../state.js';
+import { guessLat, guessLon } from '../state.js';
 import { PLOT } from '../libs.js';
 import { PAL } from '../theme.js';
 import { bucket } from '../query.js';
@@ -7,10 +7,6 @@ import { esc, fmtVal, mix, tint } from '../core/format.js';
 import { toNum } from '../core/types.js';
 import { reduceRows } from '../core/pipeline.js';
 import { setCross } from '../actions.js';
-
-export const LAT_HINT=/^(lat|latitude|y_?coord)$/i, LON_HINT=/^(lon|lng|long|longitude|x_?coord)$/i;
-export const guessLat=()=>(COLS.find(c=>LAT_HINT.test(c.name))||{}).name||null;
-export const guessLon=()=>(COLS.find(c=>LON_HINT.test(c.name))||{}).name||null;
 
 export function drawGeo(id,spec,wrap){
   if(!PLOT){ wrap.innerHTML='<p class="hintline">Map engine failed to load. Refresh to retry.</p>'; return; }

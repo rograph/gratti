@@ -9,7 +9,6 @@ import { draw3D } from './three.js';
 export { renderStatic } from './staticblocks.js';
 export { renderCard } from './card.js';
 export { renderSlicer } from './slicer.js';
-export { guessLat, guessLon } from './geo.js';
 
 export function draw(id,spec){
   const wrap=document.getElementById('w-'+id); if(!wrap) return;

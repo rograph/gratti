@@ -44,7 +44,7 @@ either unit-tested or pure DOM work with no logic worth testing.
 
 ```
 index.html         markup and CSS, plus the module tag
-src/main.js        what is left: blocks, the panel, natural language, boot
+src/main.js        what is left: blocks, the panel, boot
 src/state.js       shared state, setters, derived lookups
 src/query.js       the row predicate and the pipeline adapters
 src/storage.js     key/value store: host bridge, localStorage, memory
@@ -52,6 +52,8 @@ src/persist.js     snapshot shape, saved dashboards, autosave
 src/theme.js       palette registry and the live theme
 src/libs.js        CDN library detection and the Chart.js bootstrap
 src/actions.js     the page actions renderers call back into
+src/nl.js          request to chart spec: the model, the parser, the guard
+src/registries.js  option lists and the inline icon set
 src/renderers/     one module per visual family, plus a dispatcher
 src/core/          pure logic, no DOM, fully unit-tested
   format.js        number/string formatting, colour math

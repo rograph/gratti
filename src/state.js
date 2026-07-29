@@ -61,3 +61,8 @@ export const dateCols = () => COLS.filter(c => c.type === 'date');
 /** Categories with few enough distinct values to drive a dropdown filter. */
 export const filterCols = () =>
   catCols().filter(c => new Set(DATA.map(r => r[c.name])).size <= 40);
+
+/* Latitude and longitude are guessed from column names, not asked for. */
+const LAT_HINT = /^(lat|latitude|y_?coord)$/i, LON_HINT = /^(lon|lng|long|longitude|x_?coord)$/i;
+export const guessLat = () => (COLS.find(c => LAT_HINT.test(c.name)) || {}).name || null;
+export const guessLon = () => (COLS.find(c => LON_HINT.test(c.name)) || {}).name || null;

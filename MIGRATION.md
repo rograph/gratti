@@ -44,7 +44,7 @@ doubles as the static export.
 
 ## In progress: split main.js
 
-`src/main.js` was 1,654 lines after the import swap. It is now 1,079.
+`src/main.js` was 1,654 lines after the import swap. It is now 941.
 
 - [x] `state.js`      DATA/COLS/BLOCKS/FILTERS/CROSS/SEL, setters, block
                       lookups, derived schema helpers
@@ -56,10 +56,11 @@ doubles as the static export.
 - [x] `actions.js`    the three page actions renderers call back into
 - [x] `renderers/`    chart2d, table, geo, three, card, slicer, staticblocks,
                       and an index.js that dispatches on visual type
-- [ ] `pane.js`       the right-hand properties panel
-- [ ] `nl.js`         askAI prompt + offline keyword parser + spec clean()
+- [x] `registries.js` the static option lists and the inline icon set
+- [x] `nl.js`         askAI prompt + offline keyword parser + spec clean()
+- [ ] `pane.js`       the right-hand properties panel, the last big piece
 
-Every module outside `main.js` is under 100 lines. Pipeline changes require a
+Every module outside `main.js` is under 130 lines. Pipeline changes require a
 test first.
 
 ### The state contract
@@ -93,6 +94,20 @@ registerActions({ setCross, recalc, scheduleAutosave, refreshBlock });
 All four must be hoisted function declarations, not `const` arrows, or the
 registration hits the temporal dead zone. That bites at runtime, not at build
 time, so it is worth remembering when adding a fifth.
+
+### Known bug found while testing nl.js
+
+`offlineSpec` runs its type rules in order and lets the last match win, and
+the map rule matches the bare word "location". An incidental mention beats an
+explicit request, so "revenue by location as a table" returns a bubble map.
+`test/nl.test.js` pins the current behaviour under a comment, so a fix shows
+up as a failing test rather than a silent change. The fix is to only consider
+map and choropleth when nothing more explicit matched:
+
+```js
+if (type === 'bar' && /\bmap\b|location|geograph|where/.test(s) && guessLat() && guessLon())
+  type = 'map';
+```
 
 ### Watch for missing imports
 

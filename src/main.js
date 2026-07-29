@@ -4,12 +4,12 @@
 
 import { fmt, esc, tint } from './core/format.js';
 import { inferType, toNum } from './core/types.js';
-import { is3D, isStack, isGeo } from './core/pipeline.js';
+import { is3D, isStack } from './core/pipeline.js';
 import {
   DATA, COLS, BLOCKS, FILTERS, CROSS, SEL, FILE, PANE_MODE, AI_STATE, dragId,
   find, charts, setBlocks, setFilters, setCrossFilter, setSel,
   setPaneMode, setAiState, setDragId, setDataset, clearFilters, nextId,
-  colTypeOf as colType, numCols, catCols, dateCols, filterCols
+  colTypeOf as colType, numCols, catCols, dateCols, filterCols, guessLat, guessLon
 } from './state.js';
 import {
   snapshot as buildSnapshot, listSaves, putSave, getSave, removeSave,
@@ -19,7 +19,11 @@ import { LIBS, PLOT, DLAB } from './libs.js';
 import { THEMES, THEME, PAL, setTheme, setPal } from './theme.js';
 import { rows } from './query.js';
 import { registerActions } from './actions.js';
-import { draw, renderStatic, guessLat, guessLon } from './renderers/index.js';
+import { draw, renderStatic } from './renderers/index.js';
+import {
+  ICON, T2D, T3D, TGEO, CFMODES, LINES, GEOMODE, AGGS, FMTS, DGROUP, SORTS
+} from './registries.js';
+import { askAI, offlineSpec, clean } from './nl.js';
 
 function applyTheme(){
   const r=document.documentElement.style;
@@ -33,39 +37,6 @@ function applyTheme(){
   redrawAll(); renderKPIs();
 }
 
-/* ---------- registries ---------- */
-const ICON = {
-  bar:'<rect x="3" y="9" width="3.4" height="10" rx="1"/><rect x="8.3" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="12" width="3.4" height="7" rx="1"/>',
-  stack:'<rect x="3.5" y="12" width="4" height="7" rx="1"/><rect x="3.5" y="7.5" width="4" height="4" rx="1" opacity=".5"/><rect x="9.5" y="9" width="4" height="10" rx="1"/><rect x="9.5" y="4.5" width="4" height="4" rx="1" opacity=".5"/><rect x="15.5" y="13" width="4" height="6" rx="1"/><rect x="15.5" y="8.5" width="4" height="4" rx="1" opacity=".5"/>',
-  stack100:'<rect x="3.5" y="4" width="4" height="15" rx="1.2" opacity=".45"/><rect x="3.5" y="11" width="4" height="8" rx="1.2"/><rect x="9.5" y="4" width="4" height="15" rx="1.2" opacity=".45"/><rect x="9.5" y="9" width="4" height="10" rx="1.2"/><rect x="15.5" y="4" width="4" height="15" rx="1.2" opacity=".45"/><rect x="15.5" y="13" width="4" height="6" rx="1.2"/>',
-  hbar:'<rect x="3" y="4" width="12" height="3.2" rx="1"/><rect x="3" y="9.4" width="16" height="3.2" rx="1"/><rect x="3" y="14.8" width="8" height="3.2" rx="1"/>',
-  line:'<path d="M3 15l4.5-5 4 3L19 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
-  area:'<path d="M3 16l4.5-5 4 3L19 6v10z"/>',
-  combo:'<rect x="3.2" y="11" width="3.6" height="8" rx="1"/><rect x="9.2" y="13" width="3.6" height="6" rx="1"/><rect x="15.2" y="9" width="3.6" height="10" rx="1"/><path d="M5 8l6 3 6-6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
-  pie:'<path d="M11 3a8 8 0 108 8h-8z"/><path d="M13 2.4A8 8 0 0119.6 9H13z" opacity=".45"/>',
-  doughnut:'<path d="M11 3a8 8 0 108 8h-4a4 4 0 11-4-4z"/>',
-  radar:'<path d="M11 3l7 5-2.7 8.4H6.7L4 8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M11 7l3.4 2.4-1.3 4H8.9l-1.3-4z"/>',
-  scatter:'<circle cx="5.5" cy="15" r="1.9"/><circle cx="10" cy="8.5" r="1.9"/><circle cx="15" cy="12" r="1.9"/><circle cx="17.5" cy="6" r="1.9"/>',
-  table:'<rect x="3" y="4.5" width="16" height="13" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 8.8h16M3 13.1h16M9.4 4.5v13" stroke="currentColor" stroke-width="1.4"/>',
-  map:'<path d="M3 6.2 8 4.4v11.4L3 17.6z" opacity=".45"/><path d="M8 4.4l6 1.9v11.3L8 15.8z" opacity=".7"/><path d="M14 6.3l5-1.9v11.4l-5 1.8z" opacity=".45"/><circle cx="11" cy="9.4" r="2.3"/>',
-  choropleth:'<path d="M3.5 5.5h7v6h-7z" opacity=".8"/><path d="M10.5 5.5h8v3.4h-8z" opacity=".45"/><path d="M10.5 8.9h8v6.2h-8z" opacity=".65"/><path d="M3.5 11.5h7v5h-7z" opacity=".35"/>',
-  bar3d:'<path d="M4 10l3-1.6L10 10v7l-3 1.6L4 17z"/><path d="M9 6.5L12 5l3 1.5v10.5l-3 1.5-3-1.5z" opacity=".62"/><path d="M14 9l3-1.5 3 1.5v8l-3 1.5-3-1.5z" opacity=".38"/>',
-  scatter3d:'<path d="M11 3l8 4.5v9L11 21l-8-4.5v-9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><circle cx="8" cy="10" r="1.6"/><circle cx="14" cy="13" r="1.6"/><circle cx="12" cy="7.5" r="1.4"/>',
-  surface3d:'<path d="M3 14l5-4 4 2.6 5-4.6 2 1.4v5.2l-8 4.4-8-4.4z" opacity=".55"/><path d="M3 13.6l5-4 4 2.6 5-4.6 2 1.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>'
-};
-const T2D=[['bar','Column'],['stack','Stacked'],['stack100','100%'],['hbar','Bar'],
-           ['line','Line'],['area','Area'],['combo','Combo'],['table','Table'],
-           ['pie','Pie'],['doughnut','Donut'],['radar','Radar'],['scatter','Scatter']];
-const T3D=[['bar3d','3D Col'],['scatter3d','3D Points'],['surface3d','3D Surface']];
-const TGEO=[['map','Bubble map'],['choropleth','Region map']];
-const CFMODES=[['none','None'],['bars','Data bars'],['scale','Colour scale'],['arrows','Up/down arrows']];
-const LINES=[['avg','Average'],['min','Minimum'],['max','Maximum'],['trend','Trend']];
-const GEOMODE=[['USA-states','US states'],['country names','Countries'],['ISO-3','Country codes']];
-const AGGS=[['sum','Sum'],['avg','Average'],['count','Count'],['min','Minimum'],['max','Maximum'],['pct','% of total']];
-const FMTS=[['auto','Auto'],['currency','Currency'],['int','Whole number'],['pct1','Percent']];
-const DGROUP=[['raw','Exact date'],['month','Month'],['quarter','Quarter'],['year','Year']];
-const SORTS=[['auto','Automatic'],['value-desc','Value, high to low'],['value-asc','Value, low to high'],
-             ['label-asc','Label A-Z'],['label-desc','Label Z-A']];
 const COLS_N=12, GAP=16, SPAN_MIN=3, SPAN_MAX=12, H_MIN=120, H_MAX=760;
 
 const $=s=>document.querySelector(s);
@@ -880,115 +851,6 @@ function exportJSON(){
 function importJSON(text){
   try{ restore(JSON.parse(text)); say('Dashboard imported.'); scheduleAutosave(); }
   catch(e){ say('That file is not a Gratti dashboard.',true); }
-}
-
-/* ==========================================================
-   NATURAL LANGUAGE
-   ========================================================== */
-async function askAI(q){
-  const prompt=`You turn plain-language requests into chart specs for a dashboard tool.
-
-Columns: ${COLS.map(c=>`${c.name} (${c.type})`).join(', ')}
-Sample rows:
-${DATA.slice(0,3).map(r=>JSON.stringify(r)).join('\n')}
-
-Request: "${q}"
-
-Reply with ONLY a JSON object, no fences, no commentary:
-{"type":"bar|stack|stack100|hbar|line|area|combo|table|pie|doughnut|radar|scatter|map|choropleth|bar3d|scatter3d|surface3d","x":"<group-by column>","y":"<numeric column or null>","y2":"<second numeric column for combo, else null>","z":"<numeric column for 3D points else null>","lat":"<latitude column for map else null>","lon":"<longitude column for map else null>","agg":"sum|avg|count|min|max|pct","agg2":"sum|avg|count|min|max","series":"<split column or null>","dateGroup":"raw|month|quarter|year","sort":"auto|value-desc|value-asc|label-asc|label-desc","topN":0,"compare":"none|prev","target":null,"cf":"none|bars|scale|arrows","analytics":{"avg":false,"trend":false},"numfmt":"auto|currency|int|pct1","title":"<short title>"}
-
-Rules:
-- x, y, y2, z, lat, lon, series must be exact column names or null.
-- Use line or area when x is a date column; set dateGroup to month unless another rollup is asked for.
-- Use stack when the request says stacked, stack100 for share or percentage mix.
-- Use combo when two different measures are requested together; put the second in y2.
-- Use table when the request asks for a table, list, or raw numbers. Set cf to bars when it asks to highlight or rank cells visually.
-- Use map when the request mentions a map, locations, or geography and latitude and longitude columns exist.
-- Use choropleth when the request mentions states, regions, or countries and a code column exists.
-- Set analytics.avg or analytics.trend to true when the request asks for an average line or a trend line.
-- Use count with y=null for how-many questions; pct for share-of-total.
-- topN is a number, 0 means show everything. Set it when the request says top N.
-- compare is "prev" when the request mentions versus last month, prior period, or year over year.
-- target is a number only when the request names a goal.
-- numfmt currency when the value is money.
-- Only use a 3d type when the request explicitly says 3D.
-- Title under 6 words.`;
-  const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
-  if(!res.ok) throw new Error('api');
-  const data=await res.json();
-  const txt=data.content.filter(b=>b.type==='text').map(b=>b.text).join('');
-  const m=txt.replace(/```json|```/g,'').trim().match(/\{[\s\S]*\}/);
-  return JSON.parse(m?m[0]:txt);
-}
-function offlineSpec(q){
-  const s=q.toLowerCase(), n=numCols(), c=COLS.filter(x=>x.type==='category'), d=dateCols();
-  const hit=l=>l.find(x=>s.includes(x.name.toLowerCase()));
-  let type='bar';
-  if(/\bline\b|trend|over time|monthly/.test(s)) type='line';
-  if(/\barea\b/.test(s)) type='area';
-  if(/stacked|stack/.test(s)) type='stack';
-  if(/100%|share of|percentage mix|mix/.test(s)) type='stack100';
-  if(/combo|and.*line|two measures/.test(s)) type='combo';
-  if(/\btable\b|list|raw numbers/.test(s)) type='table';
-  if(/\bmap\b|location|geograph|where/.test(s)&&guessLat()&&guessLon()) type='map';
-  if(/by state|per state|choropleth|region map/.test(s)) type='choropleth';
-  if(/\bpie\b|breakdown/.test(s)) type='pie';
-  if(/donut|doughnut/.test(s)) type='doughnut';
-  if(/radar|spider/.test(s)) type='radar';
-  if(/horizontal|ranked/.test(s)) type='hbar';
-  if(/3d|three.d/.test(s)) type=/scatter|point/.test(s)?'scatter3d':'bar3d';
-  let agg='sum';
-  if(/average|avg|mean/.test(s)) agg='avg';
-  if(/count|how many|number of/.test(s)) agg='count';
-  if(/max|highest|peak/.test(s)) agg='max';
-  if(/min|lowest/.test(s)) agg='min';
-  if(/% of|percent of|share of/.test(s)) agg='pct';
-  const topM=s.match(/top\s+(\d+)/);
-  const y=agg==='count'?null:((hit(n)||n[0]||{}).name||null);
-  const x=(hit(d)||hit(c)||d[0]||c[0]||COLS[0]).name;
-  const sp=c.filter(k=>k.name!==x&&s.includes(k.name.toLowerCase()))[0];
-  const y2=n.filter(k=>k.name!==y&&s.includes(k.name.toLowerCase()))[0];
-  return {type,x,y,y2:y2?y2.name:null,z:(n[1]||{}).name||null,agg,agg2:'sum',
-    lat:guessLat(), lon:guessLon(), geoMode:'USA-states',
-    analytics:{avg:/average line|show average/.test(s), trend:/trend ?line|trendline/.test(s)},
-    cf:/data bars|highlight/.test(s)?'bars':'none',
-    series:sp?sp.name:null, dateGroup:colType(x)==='date'?'month':'raw',
-    sort:'auto', topN:topM?+topM[1]:0, compare:/last month|prior|previous|year over year/.test(s)?'prev':'none',
-    target:null, numfmt:/revenue|sales|price|cost|amount|\$/.test(s)?'currency':'auto',
-    title:`${agg==='count'?'Count':(y||'Value')} by ${x}`};
-}
-function clean(spec){
-  const names=COLS.map(c=>c.name), fix=v=>names.includes(v)?v:null;
-  const all=[...T2D,...TGEO,...T3D].map(t=>t[0]);
-  spec.x=fix(spec.x)||(dateCols()[0]||catCols()[0]||COLS[0]).name;
-  spec.y=fix(spec.y); spec.y2=fix(spec.y2); spec.z=fix(spec.z); spec.series=fix(spec.series);
-  spec.lat=fix(spec.lat); spec.lon=fix(spec.lon);
-  if(spec.series===spec.x) spec.series=null;
-  if(!all.includes(spec.type)) spec.type='bar';
-  if(is3D(spec.type)&&!PLOT) spec.type='bar';
-  if(isGeo(spec.type)&&!PLOT) spec.type='bar';
-  if(spec.type==='map'){ if(!spec.lat) spec.lat=guessLat(); if(!spec.lon) spec.lon=guessLon();
-    if(!spec.lat||!spec.lon) spec.type='bar'; }
-  if(spec.type==='choropleth'&&!GEOMODE.map(g=>g[0]).includes(spec.geoMode)) spec.geoMode='USA-states';
-  if(!spec.analytics||typeof spec.analytics!=='object') spec.analytics={};
-  if(!CFMODES.map(c=>c[0]).includes(spec.cf)) spec.cf='none';
-  if(!spec.y&&spec.agg!=='count') spec.agg='count';
-  if(spec.type==='scatter3d'&&!spec.z) spec.z=(numCols()[1]||{}).name||spec.y;
-  if(spec.type==='combo'&&!spec.y2) spec.y2=(numCols().find(n=>n.name!==spec.y)||{}).name||null;
-  if(['pie','doughnut'].includes(spec.type)) spec.series=null;
-  if(isStack(spec.type)&&!spec.series) spec.series=(catCols().find(c=>c.name!==spec.x)||{}).name||null;
-  if(!['sum','avg','count','min','max','pct'].includes(spec.agg)) spec.agg='sum';
-  if(!['auto','currency','int','pct1'].includes(spec.numfmt)) spec.numfmt='auto';
-  if(spec.agg==='pct') spec.numfmt='pct1';
-  if(!DGROUP.map(d=>d[0]).includes(spec.dateGroup)) spec.dateGroup=colType(spec.x)==='date'?'month':'raw';
-  if(!SORTS.map(s=>s[0]).includes(spec.sort)) spec.sort='auto';
-  spec.topN=Math.max(0,Math.min(25,+spec.topN||0));
-  if(spec.target!=null&&!isFinite(+spec.target)) spec.target=null;
-  if(spec.target!=null) spec.target=+spec.target;
-  spec.title=(spec.title||'Chart').slice(0,52);
-  return spec;
 }
 
 /* ==========================================================
