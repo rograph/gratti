@@ -1,7 +1,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Gratti</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%233D3AF5'/%3E%3Cpath d='M3 19.5V14.6L9 9.1l4.3 2.7L21 4.5v15Z' fill='%23fff' transform='translate(3.36 3.36) scale(0.72)'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="./brand/favicon.svg">
+<link rel="icon" href="./brand/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="./brand/gratti-icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -335,6 +337,31 @@
     .card{padding:15px 16px 16px}
     .plot-wrap{max-height:56vh}
   }
+  /* ---------- gallery on the empty board ---------- */
+  .gallery{margin-top:30px;padding-top:26px;border-top:1px solid var(--line);text-align:left}
+  .gallery h3{margin:0 0 14px;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--muted);font-weight:500}
+  .gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:12px}
+  .galcard{display:flex;flex-direction:column;gap:5px;padding:14px 16px;border:1px solid var(--line);
+    border-radius:12px;background:var(--surface);text-decoration:none;color:inherit;transition:.15s}
+  .galcard:hover{border-color:var(--accent);box-shadow:var(--sh-1);transform:translateY(-1px)}
+  .galcard b{font-size:13.5px;font-weight:600;letter-spacing:-.01em}
+  .galcard span{font-family:var(--mono);font-size:9.5px;color:var(--muted);letter-spacing:.04em}
+
+  /* ---------- viewer mode: read-only, still interactive ---------- */
+  .byline{display:none}
+  .viewer .app{grid-template-columns:1fr}
+  /* !important: loadCSV sets an inline display on the filter-bar button */
+  .viewer .pane,.viewer .ask,.viewer .act,.viewer .divide{display:none!important}
+  .viewer .deck h1{cursor:default}
+  .viewer .deck h1:focus{outline:none;background:none;padding:0;margin:0}
+  .viewer .byline{display:flex;align-items:center;justify-content:center;gap:7px;flex:none;
+    padding:14px 20px 18px;background:var(--surface);border-top:1px solid var(--line);
+    font-family:var(--mono);font-size:9.5px;letter-spacing:.07em;color:var(--muted)}
+  .viewer .byline .mark{width:15px;height:15px;border-radius:4px;box-shadow:none}
+  .viewer .byline a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--line)}
+  .viewer .byline a:hover{color:var(--accent);border-color:var(--accent)}
+
   @media print{
     .top .act,.strip,.ask,.pane,.grip,.ctrl,.rs,.readout{display:none!important}
     .app{display:block;height:auto;overflow:visible}
@@ -383,6 +410,11 @@
         <button class="act act-solid" type="button" id="askBtn">Create chart</button>
       </div>
       <div class="say" id="say"></div>
+    </div>
+
+    <div class="byline">
+      <span class="mark"><svg width="9" height="9" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19.5V14.6L9 9.1l4.3 2.7L21 4.5v15Z" fill="#fff"/></svg></span>
+      <span>Built with <a href="https://rodolfo.app" target="_blank" rel="noopener">Gratti</a></span>
     </div>
   </section>
 

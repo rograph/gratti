@@ -1,5 +1,5 @@
 /** Text and image blocks, and the dispatcher for every non-chart block. */
-import { find } from '../state.js';
+import { find, VIEWER } from '../state.js';
 import { esc } from '../core/format.js';
 import { scheduleAutosave } from '../actions.js';
 import { renderCard } from './card.js';
@@ -11,8 +11,8 @@ export function renderStatic(id){
   if(b.kind==='slicer') return renderSlicer(id,b,w);
   if(b.kind==='text'){
     w.innerHTML=`<div class="tb ${b.spec.align==='center'?'center':''}">
-      <div class="tb-head" contenteditable="true" spellcheck="false" data-th="${id}">${esc(b.spec.heading||'')}</div>
-      <div class="tb-body" contenteditable="true" spellcheck="false" data-tx="${id}">${esc(b.spec.body||'')}</div></div>`;
+      <div class="tb-head" contenteditable="${!VIEWER}" spellcheck="false" data-th="${id}">${esc(b.spec.heading||'')}</div>
+      <div class="tb-body" contenteditable="${!VIEWER}" spellcheck="false" data-tx="${id}">${esc(b.spec.body||'')}</div></div>`;
     w.querySelector(`[data-th="${id}"]`).addEventListener('blur',e=>{ b.spec.heading=e.target.textContent; scheduleAutosave(); });
     w.querySelector(`[data-tx="${id}"]`).addEventListener('blur',e=>{ b.spec.body=e.target.textContent; scheduleAutosave(); });
   }else{

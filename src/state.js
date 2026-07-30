@@ -20,6 +20,7 @@ export let FILE = '';      // source file name
 export let PANE_MODE = 'data';      // data | block | theme
 export let AI_STATE = 'unknown';    // unknown | ok | off
 export let dragId = null;  // block id mid-drag
+export let VIEWER = false; // read-only: a published dashboard, not the editor
 
 export const setData = v => { DATA = v; };
 export const setCols = v => { COLS = v; };
@@ -31,6 +32,7 @@ export const setFile = v => { FILE = v; };
 export const setPaneMode = v => { PANE_MODE = v; };
 export const setAiState = v => { AI_STATE = v; };
 export const setDragId = v => { dragId = v; };
+export const setViewer = v => { VIEWER = v; };
 
 /** Swap the whole dataset in one call. Used by load, unload, and restore. */
 export function setDataset({ data = [], cols = [], file = '' } = {}) {
@@ -66,3 +68,13 @@ export const filterCols = () =>
 const LAT_HINT = /^(lat|latitude|y_?coord)$/i, LON_HINT = /^(lon|lng|long|longitude|x_?coord)$/i;
 export const guessLat = () => (COLS.find(c => LAT_HINT.test(c.name)) || {}).name || null;
 export const guessLon = () => (COLS.find(c => LON_HINT.test(c.name)) || {}).name || null;
+
+/**
+ * Numeric columns worth showing as a measure. Latitude and longitude are
+ * numbers but never a metric, and auto-picked KPI cards used to lead with
+ * them, which reads as a bug to anyone looking at the dashboard.
+ */
+export const metricCols = () => {
+  const geo = [guessLat(), guessLon()].filter(Boolean);
+  return numCols().filter(c => !geo.includes(c.name));
+};

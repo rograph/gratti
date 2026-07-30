@@ -1,6 +1,6 @@
 {
   "name": "gratti",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Lightweight white-label dashboards. Upload a CSV, describe a chart, share the result.",
@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "dashboards": "node scripts/dashboards.mjs"
   },
   "devDependencies": {
     "vite": "^8.1.5",

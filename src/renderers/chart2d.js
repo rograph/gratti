@@ -53,13 +53,18 @@ export function draw2D(id,spec,wrap){
       pointBorderColor:'#fff', pointBorderWidth:1.5, order:0, yAxisID:'y1'});
   }
 
-  const scales = (pie||spec.type==='radar') ? {} : {
-    x:{stacked, grid:{display:false}, border:{display:false},
-       ticks:{maxRotation:38,autoSkipPadding:14,padding:6,font:{size:11}}},
-    y:{stacked, grid:{color:'#F0F3F7',drawTicks:false}, border:{display:false},
-       ticks:{callback:v=>fmtVal(v,fmtMode),padding:10,maxTicksLimit:6,font:{size:11}},
-       grace:'8%', max:spec.type==='stack100'?100:undefined}
-  };
+  /* hbar sets indexAxis to y, which swaps which axis carries the labels and
+     which carries the numbers. Describe the two axes by role and assign them
+     accordingly, or a horizontal bar chart formats its category names as
+     values and puts the gridlines on the wrong axis. */
+  const horiz = spec.type==='hbar';
+  const catAxis = {stacked, grid:{display:false}, border:{display:false},
+    ticks:{maxRotation:38,autoSkipPadding:14,padding:6,font:{size:11}}};
+  const valAxis = {stacked, grid:{color:'#F0F3F7',drawTicks:false}, border:{display:false},
+    ticks:{callback:v=>fmtVal(v,fmtMode),padding:10,maxTicksLimit:6,font:{size:11}},
+    grace:'8%', max:spec.type==='stack100'?100:undefined};
+  const scales = (pie||spec.type==='radar') ? {}
+    : horiz ? {x:valAxis, y:catAxis} : {x:catAxis, y:valAxis};
   if(spec.type==='combo'&&spec.y2)
     scales.y1={position:'right',grid:{display:false},border:{display:false},
       ticks:{callback:v=>fmtVal(v,spec.numfmt2||'auto'),padding:8,maxTicksLimit:5,font:{size:11},

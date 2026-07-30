@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as S from '../src/state.js';
-import { offlineSpec, clean } from '../src/nl.js';
+import { offlineSpec, offlineSuggest, clean } from '../src/nl.js';
 
 const COLS = [
   { name: 'Month', type: 'date' },
@@ -46,19 +46,15 @@ describe('offlineSpec picks a visual from the wording', () => {
   });
 
   /*
-   * KNOWN BUG, pinned so a fix shows up as a failing test.
-   *
-   * The rules run in order and the last match wins, and the map rule matches
-   * the bare word "location". So an incidental mention of location beats an
-   * explicit request for a table or a stack. Asking for "revenue by location
-   * as a table" gets you a bubble map.
-   *
-   * The one-line fix is to only consider map and choropleth when nothing
-   * more explicit matched: `if (type === 'bar' && /.../.test(s))`.
+   * Geography is a weak signal. "location" and "state" show up incidentally
+   * in requests that name their type outright, so the map and choropleth
+   * rules only run when nothing more explicit matched. This was the pinned
+   * bug where "revenue by location as a table" returned a bubble map.
    */
-  it('lets an incidental "location" override an explicit chart type', () => {
-    expect(type('revenue by location as a table')).toBe('map');
-    expect(type('revenue by location stacked by channel')).toBe('map');
+  it('lets an explicit chart type beat an incidental geography word', () => {
+    expect(type('revenue by location as a table')).toBe('table');
+    expect(type('revenue by location stacked by channel')).toBe('stack');
+    expect(type('revenue per state as a table')).toBe('table');
   });
 });
 
@@ -78,6 +74,30 @@ describe('offlineSpec reads the rest of the request', () => {
   it('matches columns the request names, and falls back when it names none', () => {
     expect(offlineSpec('units by channel')).toMatchObject({ x: 'Channel', y: 'Units' });
     expect(offlineSpec('show me something')).toMatchObject({ x: 'Month', y: 'Latitude' });
+  });
+
+  /*
+   * "Venue" is a substring of "revenue", so matching column names with
+   * includes() split every revenue chart by venue. Names are matched on word
+   * boundaries now. This bit real data, not a contrived case.
+   */
+  it('does not treat a column name buried inside another word as a mention', () => {
+    S.setDataset({ data: [], cols: [
+      { name: 'Stage', type: 'category' }, { name: 'Venue', type: 'category' },
+      { name: 'Revenue', type: 'number' }
+    ] });
+    const s = offlineSpec('revenue by stage');
+    expect(s.x).toBe('Stage');
+    expect(s.y).toBe('Revenue');
+    expect(s.series).toBeNull();
+  });
+
+  it('still matches a column that is genuinely named', () => {
+    S.setDataset({ data: [], cols: [
+      { name: 'Stage', type: 'category' }, { name: 'Venue', type: 'category' },
+      { name: 'Revenue', type: 'number' }
+    ] });
+    expect(offlineSpec('revenue by stage split by venue').series).toBe('Venue');
   });
 
   it('splits by a second category, never by the one on the axis', () => {
@@ -104,6 +124,57 @@ describe('offlineSpec reads the rest of the request', () => {
   it('rolls a date axis up to month', () => {
     expect(offlineSpec('revenue by month').dateGroup).toBe('month');
     expect(offlineSpec('revenue by location').dateGroup).toBe('raw');
+  });
+});
+
+describe('offlineSuggest proposes a starter dashboard from the schema', () => {
+  it('covers trend, ranking, composition, geography and detail for a rich schema', () => {
+    const specs = offlineSuggest();
+    expect(specs.length).toBeGreaterThanOrEqual(4);
+    expect(specs.length).toBeLessThanOrEqual(6);
+    const types = specs.map(s => s.type);
+    expect(types).toContain('line');
+    expect(types).toContain('bar');
+    expect(types).toContain('stack');
+    expect(types).toContain('map');
+    expect(types).toContain('table');
+    const line = specs.find(s => s.type === 'line');
+    expect(line.x).toBe('Month');
+    expect(line.dateGroup).toBe('month');
+  });
+
+  it('never charts a coordinate column as the measure', () => {
+    for (const s of offlineSuggest())
+      expect(['Latitude', 'Longitude']).not.toContain(s.y);
+  });
+
+  it('produces specs that clean() accepts with their columns intact', () => {
+    for (const s of offlineSuggest()) {
+      const c = clean({ ...s });
+      expect(c.x).toBe(s.x);
+      expect(c.y).toBe(s.y);
+    }
+  });
+
+  it('counts rows when there is no numeric column', () => {
+    S.setDataset({ data: [], cols: [
+      { name: 'Month', type: 'date' }, { name: 'Location', type: 'category' }
+    ] });
+    const specs = offlineSuggest();
+    expect(specs.length).toBeGreaterThan(0);
+    for (const s of specs) { expect(s.y ?? null).toBeNull(); expect(s.agg).toBe('count'); }
+  });
+
+  it('skips the map when there are no coordinates', () => {
+    S.setDataset({ data: [], cols: COLS.filter(c => !/Lat|Long/.test(c.name)) });
+    expect(offlineSuggest().map(s => s.type)).not.toContain('map');
+  });
+
+  it('still returns something for a schema of nothing but numbers', () => {
+    S.setDataset({ data: [], cols: [
+      { name: 'A', type: 'number' }, { name: 'B', type: 'number' }
+    ] });
+    expect(offlineSuggest().length).toBeGreaterThan(0);
   });
 });
 

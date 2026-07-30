@@ -4,12 +4,13 @@
 
 import { fmt, esc, tint } from './core/format.js';
 import { inferType, toNum } from './core/types.js';
-import { is3D, isStack } from './core/pipeline.js';
+import { is3D } from './core/pipeline.js';
 import {
-  DATA, COLS, BLOCKS, FILTERS, CROSS, SEL, FILE, PANE_MODE, AI_STATE, dragId,
+  DATA, COLS, BLOCKS, FILTERS, CROSS, SEL, PANE_MODE, AI_STATE, dragId,
   find, charts, setBlocks, setFilters, setCrossFilter, setSel,
   setPaneMode, setAiState, setDragId, setDataset, clearFilters, nextId,
-  colTypeOf as colType, numCols, catCols, dateCols, filterCols, guessLat, guessLon
+  colTypeOf as colType, numCols, metricCols, catCols, dateCols, filterCols,
+  VIEWER, setViewer
 } from './state.js';
 import {
   snapshot as buildSnapshot, listSaves, putSave, getSave, removeSave,
@@ -20,10 +21,14 @@ import { THEMES, THEME, PAL, setTheme, setPal } from './theme.js';
 import { rows } from './query.js';
 import { registerActions } from './actions.js';
 import { draw, renderStatic } from './renderers/index.js';
-import {
-  ICON, T2D, T3D, TGEO, CFMODES, LINES, GEOMODE, AGGS, FMTS, DGROUP, SORTS
-} from './registries.js';
-import { askAI, offlineSpec, clean } from './nl.js';
+import { SPAN_MIN, SPAN_MAX, H_MIN, H_MAX } from './registries.js';
+import { askAI, offlineSpec, askAISuggest, offlineSuggest, clean } from './nl.js';
+import { renderPane, registerPane } from './pane.js';
+import { slugFromSearch, loadManifest, loadDashboard } from './publish.js';
+import { seal, unseal, isSealed } from './crypt.js';
+
+/* Published dashboards available in the gallery, filled in at boot. */
+let PUBLISHED = [];
 
 function applyTheme(){
   const r=document.documentElement.style;
@@ -37,7 +42,7 @@ function applyTheme(){
   redrawAll(); renderKPIs();
 }
 
-const COLS_N=12, GAP=16, SPAN_MIN=3, SPAN_MAX=12, H_MIN=120, H_MAX=760;
+const COLS_N=12, GAP=16;
 
 const $=s=>document.querySelector(s);
 
@@ -103,11 +108,13 @@ function renderChips(){
 }
 function recalc(exceptId){ renderKPIs(); redrawAll(exceptId); scheduleAutosave(); }
 registerActions({ setCross, recalc, scheduleAutosave, refreshBlock });
+registerPane({ say, killBlock, addBlock, addChart, addFilter, unload, loadCSV, sampleCSV,
+  applySize, applyTheme, killAll, saveAs, exportJSON, exportJSONEnc, importJSON, refreshSaveList });
 
 /* ---------- KPI strip ---------- */
 function renderKPIs(){
   if(!DATA.length){ $('#kpis').innerHTML=''; return; }
-  const metrics=numCols().slice(0,3), d=rows();
+  const metrics=metricCols().slice(0,3), d=rows();
   const live=[...FILTERS.filter(f=>f.val!=='__all__').map(f=>`${f.col} = ${f.val}`),
               ...(CROSS?[`${CROSS.col} = ${CROSS.val}`]:[])];
   let h=`<div class="kpi"><div class="lab">Records</div>
@@ -170,7 +177,7 @@ function addBlock(kind,spec,silent){
   const id=nextId();
   if(kind==='chart') defaults(spec);
   else if(kind==='card'){
-    if(!spec.y&&numCols()[0]) spec.y=numCols()[0].name;
+    if(!spec.y&&metricCols()[0]) spec.y=metricCols()[0].name;
     if(!spec.agg) spec.agg='sum';
     if(!spec.numfmt) spec.numfmt='auto';
     if(spec.target===undefined) spec.target=null;
@@ -217,36 +224,42 @@ function addBlock(kind,spec,silent){
   scheduleAutosave();
   return id;
 }
-const addChart=(spec,silent)=>addBlock('chart',spec,silent);
+/* hoisted for registerPane(), same rule as the actions above */
+function addChart(spec,silent){ return addBlock('chart',spec,silent); }
 
 function shell(id,kind,spec){
-  const ctrl=`<span class="ctrl">
+  /* A published dashboard keeps its charts interactive but loses every
+     affordance that would edit, move, or delete a block. */
+  const grip=VIEWER?'':`<span class="grip" data-grip="${id}" title="Drag to reorder">⠿</span>`;
+  const edit=VIEWER?'false':'true';
+  const ctrl=VIEWER?'':`<span class="ctrl">
       <button class="cbtn" data-c="fit" aria-label="Snap to full width" title="Snap to full width">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 4 2.3 8l3.5 4M10.2 4l3.5 4-3.5 4M8 3.2v9.6"/></svg></button>
       <button class="cbtn kill" data-c="kill" aria-label="Delete block" title="Delete">×</button></span>`;
-  const handles=`<span class="rs rs-b" data-r="v" title="Drag to change height"></span>
+  const handles=VIEWER?'':`<span class="rs rs-b" data-r="v" title="Drag to change height"></span>
     <span class="rs rs-c" data-r="both" title="Drag to resize"></span>
     <span class="readout" id="ro-${id}"></span>`;
   if(kind==='chart')
     return `<div class="card-top">
-        <span class="grip" data-grip="${id}" title="Drag to reorder">⠿</span>
-        <h3 contenteditable="true" spellcheck="false" data-ttl="${id}">${esc(spec.title)}</h3>
+        ${grip}
+        <h3 contenteditable="${edit}" spellcheck="false" data-ttl="${id}">${esc(spec.title)}</h3>
         ${ctrl}</div>
       <div class="plot-wrap" id="w-${id}" style="height:${spec.h}px"></div>${handles}`;
   if(kind==='card'||kind==='slicer')
     return `<div class="card-top" style="margin-bottom:8px">
-        <span class="grip" data-grip="${id}">⠿</span>
-        ${kind==='slicer'?`<h3 contenteditable="true" spellcheck="false" data-ttl="${id}">${esc(spec.title||spec.col||'Filter')}</h3>`:'<span class="grow"></span>'}
+        ${grip}
+        ${kind==='slicer'?`<h3 contenteditable="${edit}" spellcheck="false" data-ttl="${id}">${esc(spec.title||spec.col||'Filter')}</h3>`:'<span class="grow"></span>'}
         ${ctrl}</div>
       <div class="plot-wrap" id="w-${id}" style="height:${spec.h}px"></div>${handles}`;
   if(kind==='text')
-    return `<div class="card-top"><span class="grip" data-grip="${id}">⠿</span><span class="grow"></span>${ctrl}</div>
+    return `<div class="card-top">${grip}<span class="grow"></span>${ctrl}</div>
       <div class="plot-wrap" id="w-${id}" style="height:${spec.h}px;overflow:auto"></div>${handles}`;
-  return `<div class="card-top"><span class="grip" data-grip="${id}">⠿</span><span class="grow"></span>${ctrl}</div>
+  return `<div class="card-top">${grip}<span class="grow"></span>${ctrl}</div>
       <div class="plot-wrap" id="w-${id}" style="height:${spec.h}px"></div>${handles}`;
 }
 
 function select(id){
+  if(VIEWER) return;
   setSel(id); setPaneMode('block');
   document.querySelectorAll('.card').forEach(c=>c.classList.toggle('sel',c.id==='k-'+id));
   renderPane();
@@ -313,6 +326,7 @@ function startResize(id,mode,e,handle){
 function refreshBlock(id){ const b=find(id); if(!b) return; b.kind==='chart'?draw(id,b.spec):renderStatic(id); }
 
 function wireDrag(id){
+  if(VIEWER) return;
   const card=document.getElementById('k-'+id);
   const g=card.querySelector(`[data-grip="${id}"]`); if(!g) return;
   g.addEventListener('mousedown',()=>{card.draggable=true;});
@@ -351,8 +365,36 @@ function renderBoard(){
     <h2>${has?'Describe your first chart':'Start with a spreadsheet'}</h2>
     <p>${has?'Type what you want to see. Charts, tables, notes and logos all live on the same canvas.'
             :'Load a CSV from the panel on the right, or try the sample coffee shop numbers.'}</p>
-    <div class="ideas">${ideas.map(s=>`<button class="idea" data-go="${esc(s)}">${esc(s)}</button>`).join('')}</div></div>`;
+    ${has&&!VIEWER?`<div style="margin-bottom:14px"><button class="act" id="suggestBtn">Build a dashboard for me</button></div>`:''}
+    <div class="ideas">${ideas.map(s=>`<button class="idea" data-go="${esc(s)}">${esc(s)}</button>`).join('')}</div>
+    ${!has&&PUBLISHED.length?`<div class="gallery">
+      <h3>Your dashboards</h3>
+      <div class="gal">${PUBLISHED.map(d=>`<a class="galcard" href="?d=${encodeURIComponent(d.slug)}">
+        <b>${esc(d.title||d.slug)}</b>
+        <span>${d.rows?`${Number(d.rows).toLocaleString()} rows`:''}${d.blocks?` · ${d.blocks} blocks`:''}</span></a>`).join('')}</div>
+    </div>`:''}</div>`;
   document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{ $('#askInput').value=b.dataset.go; ask(); });
+  const sb=document.getElementById('suggestBtn'); if(sb) sb.onclick=suggestDashboard;
+}
+
+/* Read the schema and build a starter dashboard: KPI cards for the top
+   measures, then a suggested set of charts. The model designs the set when
+   the endpoint answers; the schema rules in nl.js do it offline. */
+async function suggestDashboard(){
+  if(!DATA.length){ say('Load a CSV first. Use the panel on the right.',true); return; }
+  const btn=document.getElementById('suggestBtn'); if(btn) btn.disabled=true;
+  say('<span class="pip"></span>'+(AI_STATE==='off'?'Reading your field types…':'Designing a starter dashboard…'));
+  let specs, mode='ai';
+  try{ specs=await askAISuggest(); setAiState('ok'); }
+  catch(e){ specs=offlineSuggest(); mode='keyword'; setAiState('off'); }
+  if(!specs.length){ say('This file did not map to any charts. Try describing one instead.',true);
+    if(btn) btn.disabled=false; return; }
+  metricCols().slice(0,3).forEach(c=>addBlock('card',{y:c.name},true));
+  specs.slice(0,6).forEach(sp=>addChart(clean(sp),true));
+  $('#scroll').scrollTop=0;
+  say(mode==='ai'
+    ? 'Starter dashboard built. Edit or delete any block, or ask for more.'
+    : 'Starter dashboard built from your field types. No AI endpoint is reachable from this page, so the layout follows the schema rules.');
 }
 function starters(){
   const n=numCols().map(c=>c.name), c=COLS.filter(x=>x.type==='category').map(x=>x.name), d=dateCols().map(x=>x.name);
@@ -362,426 +404,6 @@ function starters(){
   if(c[0]&&n[0]) o.push(`top 5 ${c[0]} by ${n[0]}`);
   if(n[0]&&n[1]) o.push(`${n[0]} and ${n[1]} as a combo chart by ${c[0]||d[0]}`);
   return o.slice(0,4);
-}
-
-/* ==========================================================
-   PANE
-   ========================================================== */
-function renderPane(){
-  const b=SEL?find(SEL):null;
-  if(PANE_MODE==='theme'){
-    $('#paneTitle').textContent='Theme'; $('#paneSub').textContent='brand & colours';
-    $('#paneClose').style.display='inline-flex';
-    $('#paneBody').innerHTML=themePane(); wireThemePane(); return;
-  }
-  if(b){
-    const label={chart:'Chart',text:'Text',image:'Image',card:'Card',slicer:'Filter'}[b.kind]||'Block';
-    $('#paneTitle').textContent=label;
-    $('#paneSub').textContent='selected block';
-    $('#paneClose').style.display='inline-flex';
-    if(b.kind==='chart'){ $('#paneBody').innerHTML=chartPane(b); wireChartPane(b.id); }
-    else if(b.kind==='card'){ $('#paneBody').innerHTML=cardPane(b); wireCardPane(b.id); }
-    else if(b.kind==='slicer'){ $('#paneBody').innerHTML=slicerPane(b); wireSlicerPane(b.id); }
-    else { $('#paneBody').innerHTML = b.kind==='text'?textPane(b):imagePane(b); wireSimplePane(b.id); }
-    return;
-  }
-  $('#paneTitle').textContent='Data'; $('#paneSub').textContent='source & fields';
-  $('#paneClose').style.display='none';
-  $('#paneBody').innerHTML=dataPane(); wireDataPane();
-}
-
-const layoutSect=s=>`<div class="sect"><h4>Layout</h4>
-  <div class="field"><label>Width · ${s.span} of 12 columns</label>
-    <input type="range" class="rng" data-r="span" min="${SPAN_MIN}" max="${SPAN_MAX}" step="1" value="${s.span}"></div>
-  <div class="field"><label>Height · ${Math.round(s.h)}px</label>
-    <input type="range" class="rng" data-r="h" min="${H_MIN}" max="${H_MAX}" step="10" value="${s.h}"></div>
-  <p class="hintline">Or drag the bottom edge or corner of the block.</p></div>`;
-
-function dataPane(){
-  const saved=`<div class="sect"><h4>Saved dashboards</h4>
-    <ul class="saves" id="saveList"><li><span class="nm" style="color:var(--muted)">Loading…</span></li></ul>
-    <div class="toggles" style="margin-top:10px">
-      <button class="tg" id="saveAs">Save as…</button>
-      <button class="tg" id="expJson">Export file</button>
-      <button class="tg" id="impJson">Import file</button>
-      <input type="file" id="jsonIn" accept="application/json,.json" hidden>
-    </div></div>`;
-  if(!DATA.length){
-    return `<div class="sect"><h4>Source</h4>
-      <div class="zone" id="zone"><p>Drop a CSV file here</p>
-        <button class="act" id="pickBtn">Choose file</button>
-        <input type="file" id="fileIn" accept=".csv,text/csv" hidden></div>
-      <div style="margin-top:10px"><button class="act-quiet" id="sampleBtn">Use sample coffee shop data</button></div></div>
-      ${saved}`;
-  }
-  return `<div class="sect"><h4>Source</h4>
-      <div class="loaded"><div style="min-width:0"><b>${esc(FILE||'data.csv')}</b>
-        <span>${DATA.length.toLocaleString()} rows · ${COLS.length} fields</span></div>
-        <button class="act-quiet" id="unloadBtn">Change</button></div></div>
-    <div class="sect"><h4>Fields</h4><ul class="fields">
-      ${COLS.map(c=>`<li><span class="nm">${esc(c.name)}</span>
-        <span class="pill p-${c.type==='number'?'num':c.type==='date'?'date':'cat'}">${c.type}</span></li>`).join('')}
-    </ul></div>
-    <div class="sect"><h4>Insert</h4><div class="toggles">
-      <button class="tg" id="addCard2">KPI card</button>
-      <button class="tg" id="addSlice2">Filter block</button>
-      <button class="tg" id="addTxt2">Text block</button>
-      <button class="tg" id="addImg2">Image block</button>
-      <button class="tg" id="addFil2">Filter bar</button>
-    </div></div>
-    ${saved}
-    <div class="sect"><h4>Dashboard</h4><div class="toggles">
-      <button class="tg" id="pdf2">Export PDF</button>
-      <button class="tg warn" id="clearAll">Clear all blocks</button>
-    </div></div>`;
-}
-
-function chartPane(b){
-  const s=b.spec, id=b.id;
-  const tbtn=([v,l])=>`<button class="tsel ${s.type===v?'on':''}" data-type="${v}" title="${l}">
-    <svg viewBox="0 0 22 22" fill="currentColor">${ICON[v]}</svg><span>${l}</span></button>`;
-  const opts=(list,sel)=>list.map(([v,l])=>`<option value="${v}" ${v===sel?'selected':''}>${l}</option>`).join('');
-  const cols=(list,sel,nul)=>(nul?`<option value="">None</option>`:'')+
-    list.map(x=>`<option value="${esc(x.name)}" ${x.name===sel?'selected':''}>${esc(x.name)}</option>`).join('');
-  const isDate=colType(s.x)==='date';
-  const grouped=isDate&&s.dateGroup!=='raw';
-
-  return `<div class="sect"><h4>Visual</h4>
-      <div class="typegrid">${T2D.map(tbtn).join('')}</div>
-      <div class="typegrid" style="margin-top:6px">${[...TGEO,...T3D].map(tbtn).join('')}</div></div>
-
-    <div class="sect"><h4>Fields</h4>
-      <div class="field"><label>Group by</label><select data-p="x">${cols(COLS,s.x,false)}</select></div>
-      ${s.type==='map'?`<div class="field"><label>Latitude</label>
-          <select data-p="lat">${cols(numCols(),s.lat||guessLat(),true)}</select></div>
-        <div class="field"><label>Longitude</label>
-          <select data-p="lon">${cols(numCols(),s.lon||guessLon(),true)}</select></div>`:''}
-      ${s.type==='choropleth'?`<div class="field"><label>Region codes are</label>
-          <select data-p="geoMode">${opts(GEOMODE,s.geoMode||'USA-states')}</select></div>
-        <div class="field"><label>Map scope</label>
-          <select data-p="geoScope">
-            <option value="usa" ${(s.geoScope||'usa')==='usa'?'selected':''}>United States</option>
-            <option value="world" ${s.geoScope==='world'?'selected':''}>World</option>
-            <option value="europe" ${s.geoScope==='europe'?'selected':''}>Europe</option>
-            <option value="north america" ${s.geoScope==='north america'?'selected':''}>North America</option>
-          </select></div>`:''}
-      ${isDate?`<div class="field"><label>Roll up dates to</label>
-        <select data-p="dateGroup">${opts(DGROUP,s.dateGroup)}</select></div>`:''}
-      <div class="field"><label>Value</label><select data-p="y">${cols(numCols(),s.y,true)}</select></div>
-      <div class="field"><label>Summarize with</label><select data-p="agg">${opts(AGGS,s.agg)}</select></div>
-      ${s.type==='scatter3d'
-        ? `<div class="field"><label>Depth (Z)</label><select data-p="z">${cols(numCols(),s.z,true)}</select></div>`
-        : `<div class="field"><label>${isStack(s.type)?'Stack by':'Split by'}</label>
-            <select data-p="series">${cols(catCols(),s.series,true)}</select></div>`}
-      ${s.type==='combo'?`<div class="field"><label>Line measure (right axis)</label>
-          <select data-p="y2">${cols(numCols(),s.y2,true)}</select></div>
-        <div class="field"><label>Line summarized with</label>
-          <select data-p="agg2">${opts(AGGS.slice(0,5),s.agg2||'sum')}</select></div>
-        <div class="field"><label>Line number format</label>
-          <select data-p="numfmt2">${opts(FMTS,s.numfmt2||'auto')}</select></div>`:''}</div>
-
-    <div class="sect"><h4>Order</h4>
-      <div class="field"><label>Sort</label><select data-p="sort">${opts(SORTS,s.sort)}</select></div>
-      <div class="field"><label>Show top N ${s.topN?`(${s.topN})`:'(all)'}</label>
-        <input type="range" class="rng" data-r="topN" min="0" max="25" step="1" value="${s.topN}"></div>
-      ${grouped?`<div class="field"><label>Compare</label>
-        <select data-p="compare">
-          <option value="none" ${s.compare==='none'?'selected':''}>No comparison</option>
-          <option value="prev" ${s.compare==='prev'?'selected':''}>Versus prior period</option>
-        </select></div>`:''}</div>
-
-    <div class="sect"><h4>Goal</h4>
-      <div class="field"><label>Target value</label>
-        <input type="number" data-p="target" value="${s.target==null?'':s.target}" placeholder="none"></div>
-      <div class="toggles"><button class="tg ${s.targetColor?'on':''}" data-b="targetColor">Colour bars vs target</button></div></div>
-
-    <div class="sect"><h4>Analytics lines</h4>
-      <div class="toggles">
-        ${LINES.map(([k,l])=>`<button class="tg ${(s.analytics||{})[k]?'on':''}" data-a="${k}">${l}</button>`).join('')}
-      </div>
-      <p class="hintline">Computed from what the chart currently shows, so filters change them too.</p></div>
-
-    ${s.type==='table'?`<div class="sect"><h4>Cell formatting</h4>
-      <div class="field"><label>Highlight values with</label>
-        <select data-p="cf">${opts(CFMODES,s.cf||'none')}</select></div></div>`:''}
-
-    <div class="sect"><h4>Format</h4>
-      <div class="field"><label>Number format</label><select data-p="numfmt">${opts(FMTS,s.numfmt)}</select></div>
-      <div class="toggles" style="margin-top:8px">
-        <button class="tg ${s.labels?'on':''}" data-b="labels">Show values</button></div></div>
-
-    ${layoutSect(s)}
-
-    <div class="sect"><h4>Definition</h4>
-      <div class="def"><b>${s.type}</b> of <b>${esc(s.y||'row count')}</b> (${s.agg})
-        by <b>${esc(s.x)}</b>${grouped?` rolled to ${s.dateGroup}`:''}${s.series?`, split by <b>${esc(s.series)}</b>`:''}${s.topN?`, top ${s.topN}`:''}${s.target!=null?`, target ${s.target}`:''}.</div></div>
-
-    <div class="sect"><h4>Actions</h4><div class="toggles">
-      <button class="tg" data-b="dup">Duplicate</button>
-      <button class="tg warn" data-b="kill">Delete block</button></div></div>`;
-}
-
-function cardPane(b){
-  const s=b.spec;
-  const opts=(l,sel)=>l.map(([v,t])=>`<option value="${v}" ${v===sel?'selected':''}>${t}</option>`).join('');
-  const cols=(l,sel,nul)=>(nul?`<option value="">Row count</option>`:'')+
-    l.map(x=>`<option value="${esc(x.name)}" ${x.name===sel?'selected':''}>${esc(x.name)}</option>`).join('');
-  return `<div class="sect"><h4>Measure</h4>
-      <div class="field"><label>Field</label><select data-p="y">${cols(numCols(),s.y,true)}</select></div>
-      <div class="field"><label>Summarize with</label><select data-p="agg">${opts(AGGS.slice(0,5),s.agg)}</select></div>
-      <div class="field"><label>Number format</label><select data-p="numfmt">${opts(FMTS,s.numfmt)}</select></div>
-      <div class="field"><label>Label</label>
-        <input type="text" data-p="title" value="${esc(s.title||'')}" placeholder="${esc(s.y||'Records')}"></div></div>
-    <div class="sect"><h4>Context</h4>
-      <div class="field"><label>Show underneath</label>
-        <select data-p="compare">
-          <option value="none" ${s.compare==='none'?'selected':''}>Nothing</option>
-          <option value="share" ${s.compare==='share'?'selected':''}>Share of all rows</option>
-          <option value="prev" ${s.compare==='prev'?'selected':''}>Latest month vs prior</option>
-        </select></div>
-      <div class="field"><label>Target value</label>
-        <input type="number" data-p="target" value="${s.target==null?'':s.target}" placeholder="none"></div>
-      <div class="toggles"><button class="tg ${s.spark?'on':''}" data-b="spark">Trend line</button></div>
-      <p class="hintline">A target replaces the context line with progress and turns the card red or green.</p></div>
-    ${layoutSect(s)}
-    <div class="sect"><h4>Actions</h4><div class="toggles">
-      <button class="tg" data-b="dup">Duplicate</button>
-      <button class="tg warn" data-b="kill">Delete block</button></div></div>`;
-}
-function slicerPane(b){
-  const s=b.spec;
-  return `<div class="sect"><h4>Field</h4>
-      <div class="field"><label>Filter on</label>
-        <select data-p="col">${filterCols().map(c=>`<option value="${esc(c.name)}" ${c.name===s.col?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
-      <div class="toggles">
-        <button class="tg ${s.counts?'on':''}" data-b="counts">Show row counts</button>
-        <button class="tg" data-b="clear">Clear selection</button></div>
-      <p class="hintline">Selections here filter every other block, exactly like the top filter strip.</p></div>
-    ${layoutSect(s)}
-    <div class="sect"><h4>Actions</h4><div class="toggles">
-      <button class="tg warn" data-b="kill">Delete block</button></div></div>`;
-}
-function wireCardPane(id){
-  const body=$('#paneBody'), b=find(id);
-  body.querySelectorAll('select[data-p]').forEach(sel=>sel.onchange=e=>{
-    b.spec[e.target.dataset.p]=e.target.value===''?null:e.target.value;
-    if(!b.spec.y&&b.spec.agg!=='count') b.spec.agg='count';
-    renderPane(); renderStatic(id); scheduleAutosave();
-  });
-  body.querySelectorAll('input[data-p]').forEach(inp=>inp.onchange=e=>{
-    const k=e.target.dataset.p, v=e.target.value.trim();
-    b.spec[k] = k==='target' ? (v===''?null:Number(v)) : v;
-    renderPane(); renderStatic(id); scheduleAutosave();
-  });
-  body.querySelectorAll('[data-b]').forEach(btn=>btn.onclick=()=>{
-    const k=btn.dataset.b;
-    if(k==='kill') return killBlock(id);
-    if(k==='dup') return addBlock('card',{...b.spec});
-    b.spec[k]=!b.spec[k]; btn.classList.toggle('on',b.spec[k]);
-    renderStatic(id); scheduleAutosave();
-  });
-  bindLayout(id,body);
-}
-function wireSlicerPane(id){
-  const body=$('#paneBody'), b=find(id);
-  body.querySelectorAll('select[data-p]').forEach(sel=>sel.onchange=e=>{
-    b.spec.col=e.target.value; b.spec.picked=[]; b.spec.query='';
-    const h=document.querySelector(`[data-ttl="${id}"]`); if(h) h.textContent=b.spec.col;
-    renderStatic(id); recalc(id); renderPane();
-  });
-  body.querySelectorAll('[data-b]').forEach(btn=>btn.onclick=()=>{
-    const k=btn.dataset.b;
-    if(k==='kill') return killBlock(id);
-    if(k==='clear'){ b.spec.picked=[]; renderStatic(id); return recalc(id); }
-    b.spec[k]=!b.spec[k]; btn.classList.toggle('on',b.spec[k]);
-    renderStatic(id); scheduleAutosave();
-  });
-  bindLayout(id,body);
-}
-
-const textPane=b=>`<div class="sect"><h4>Text</h4>
-    <p class="hintline" style="margin-top:0">Click the heading or body on the canvas to edit.</p>
-    <div class="toggles" style="margin-top:10px">
-      <button class="tg ${b.spec.align==='center'?'on':''}" data-b="align">Centre</button></div></div>
-  ${layoutSect(b.spec)}
-  <div class="sect"><h4>Actions</h4><div class="toggles">
-    <button class="tg warn" data-b="kill">Delete block</button></div></div>`;
-
-const imagePane=b=>`<div class="sect"><h4>Image</h4>
-    <div class="zone" id="imgZone"><p>${b.spec.src?'Replace image':'Drop a PNG, JPG or SVG'}</p>
-      <button class="act" id="imgPick">Choose file</button>
-      <input type="file" id="imgIn" accept="image/*" hidden></div>
-    <div class="toggles" style="margin-top:10px">
-      <button class="tg ${b.spec.fit==='cover'?'on':''}" data-b="fit">Fill the block</button>
-      ${b.spec.src?`<button class="tg" data-b="asLogo">Use as brand logo</button>`:''}</div></div>
-  ${layoutSect(b.spec)}
-  <div class="sect"><h4>Actions</h4><div class="toggles">
-    <button class="tg warn" data-b="kill">Delete block</button></div></div>`;
-
-function themePane(){
-  const sw=([k,t])=>`<button class="sw ${THEME.key===k?'on':''}" data-theme="${k}">
-    <span class="dots">${t.pal.slice(0,4).map(c=>`<i style="background:${c}"></i>`).join('')}</span>
-    <span>${t.name}</span></button>`;
-  return `<div class="sect"><h4>Palette</h4>
-      <div class="swatches">${Object.entries(THEMES).map(sw).join('')}</div></div>
-    <div class="sect"><h4>Accent colour</h4>
-      <div class="colorrow">
-        <input type="color" id="accentPick" value="${THEME.accent}">
-        <span class="hintline" style="margin:0">Overrides the palette's first colour.</span></div></div>
-    <div class="sect"><h4>Client logo</h4>
-      ${THEME.logo?`<div class="loaded"><img src="${THEME.logo}" style="height:26px;max-width:120px;object-fit:contain">
-        <button class="act-quiet" id="logoClear">Remove</button></div>`
-        :`<div class="zone" id="logoZone"><p>Replaces the Gratti mark in the header</p>
-          <button class="act" id="logoPick">Choose file</button>
-          <input type="file" id="logoIn" accept="image/*" hidden></div>`}
-      <p class="hintline">Saved with the dashboard, so each client keeps their own branding.</p></div>`;
-}
-
-/* ---------- pane wiring ---------- */
-function bindLayout(id,body){
-  const b=find(id);
-  body.querySelectorAll('.rng').forEach(r=>{
-    const card=document.getElementById('k-'+id);
-    r.addEventListener('input',()=>{
-      const k=r.dataset.r;
-      if(k==='span') b.spec.span=+r.value;
-      else if(k==='h') b.spec.h=+r.value;
-      else { b.spec.topN=+r.value; }
-      const lab=r.previousElementSibling;
-      if(lab) lab.textContent = k==='span'?`Width · ${b.spec.span} of 12 columns`
-        : k==='h'?`Height · ${Math.round(b.spec.h)}px`
-        : `Show top N ${b.spec.topN?`(${b.spec.topN})`:'(all)'}`;
-      if(k!=='topN'){ applySize(id,true); if(card) card.classList.add('resizing'); }
-    });
-    r.addEventListener('change',()=>{
-      if(card) card.classList.remove('resizing');
-      refreshBlock(id); scheduleAutosave();
-    });
-  });
-}
-function wireChartPane(id){
-  const body=$('#paneBody'), b=find(id); if(!b) return;
-  const c=b;
-  body.querySelectorAll('[data-type]').forEach(t=>t.onclick=()=>{
-    const v=t.dataset.type;
-    if(is3D(v)&&!PLOT){ say('3D engine unavailable. Refresh to retry.',true); return; }
-    c.spec.type=v;
-    if(v==='scatter3d'&&!c.spec.z) c.spec.z=(numCols()[1]||numCols()[0]||{}).name||null;
-    if(['pie','doughnut'].includes(v)) c.spec.series=null;
-    if(v==='combo'&&!c.spec.y2) c.spec.y2=(numCols().find(n=>n.name!==c.spec.y)||{}).name||null;
-    if(v==='map'){ if(!c.spec.lat) c.spec.lat=guessLat(); if(!c.spec.lon) c.spec.lon=guessLon();
-      c.spec.span=Math.max(c.spec.span,6); c.spec.h=Math.max(c.spec.h,340); applySize(id); }
-    if(v==='choropleth'){ c.spec.span=Math.max(c.spec.span,6); c.spec.h=Math.max(c.spec.h,340); applySize(id); }
-    if(is3D(v)){ c.spec.span=SPAN_MAX; c.spec.h=Math.max(c.spec.h,400); applySize(id); }
-    renderPane(); setTimeout(()=>draw(id,c.spec),200); scheduleAutosave();
-  });
-  body.querySelectorAll('[data-a]').forEach(btn=>btn.onclick=()=>{
-    c.spec.analytics=c.spec.analytics||{};
-    const k=btn.dataset.a;
-    c.spec.analytics[k]=!c.spec.analytics[k];
-    btn.classList.toggle('on',c.spec.analytics[k]);
-    draw(id,c.spec); scheduleAutosave();
-  });
-  body.querySelectorAll('select[data-p]').forEach(sel=>sel.onchange=e=>{
-    const k=e.target.dataset.p;
-    c.spec[k]=e.target.value===''?null:e.target.value;
-    if(k==='x') c.spec.dateGroup = colType(c.spec.x)==='date'?'month':'raw';
-    if(!c.spec.y&&c.spec.agg!=='count') c.spec.agg='count';
-    if(c.spec.agg==='pct') c.spec.numfmt='pct1';
-    renderPane(); draw(id,c.spec); scheduleAutosave();
-  });
-  body.querySelectorAll('input[data-p]').forEach(inp=>inp.onchange=e=>{
-    const v=e.target.value.trim();
-    c.spec[e.target.dataset.p] = v===''?null:Number(v);
-    renderPane(); draw(id,c.spec); scheduleAutosave();
-  });
-  body.querySelectorAll('[data-b]').forEach(btn=>btn.onclick=()=>{
-    const k=btn.dataset.b;
-    if(k==='kill') return killBlock(id);
-    if(k==='dup') return addChart({...c.spec,title:c.spec.title+' copy'});
-    c.spec[k]=!c.spec[k];
-    btn.classList.toggle('on',c.spec[k]);
-    draw(id,c.spec); scheduleAutosave();
-  });
-  bindLayout(id,body);
-}
-function wireSimplePane(id){
-  const body=$('#paneBody'), b=find(id);
-  body.querySelectorAll('[data-b]').forEach(btn=>btn.onclick=()=>{
-    const k=btn.dataset.b;
-    if(k==='kill') return killBlock(id);
-    if(k==='align'){ b.spec.align=b.spec.align==='center'?'left':'center'; }
-    else if(k==='fit'){ b.spec.fit=b.spec.fit==='cover'?'contain':'cover'; }
-    else if(k==='asLogo'){ THEME.logo=b.spec.src; applyTheme(); say('Logo applied to the header.'); }
-    btn.classList.toggle('on');
-    renderStatic(id); scheduleAutosave();
-  });
-  const zone=body.querySelector('#imgZone');
-  if(zone){
-    const read=f=>{ const r=new FileReader();
-      r.onload=e=>{ b.spec.src=e.target.result; renderStatic(id); renderPane(); scheduleAutosave(); };
-      r.readAsDataURL(f); };
-    body.querySelector('#imgPick').onclick=()=>body.querySelector('#imgIn').click();
-    body.querySelector('#imgIn').onchange=e=>{ const f=e.target.files[0]; if(f) read(f); };
-    ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('over');}));
-    ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('over');}));
-    zone.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) read(f); });
-  }
-  bindLayout(id,body);
-}
-function wireThemePane(){
-  const body=$('#paneBody');
-  body.querySelectorAll('[data-theme]').forEach(b=>b.onclick=()=>{
-    const t=THEMES[b.dataset.theme];
-    setTheme({...THEME,key:b.dataset.theme,accent:t.accent,pal:[...t.pal]});
-    applyTheme(); renderPane(); scheduleAutosave();
-  });
-  const pick=body.querySelector('#accentPick');
-  if(pick) pick.oninput=e=>{
-    THEME.accent=e.target.value; THEME.pal=[e.target.value,...THEME.pal.slice(1)]; THEME.key='custom';
-    applyTheme(); scheduleAutosave();
-  };
-  const lz=body.querySelector('#logoZone');
-  if(lz){
-    const read=f=>{ const r=new FileReader();
-      r.onload=e=>{ THEME.logo=e.target.result; applyTheme(); renderPane(); scheduleAutosave(); };
-      r.readAsDataURL(f); };
-    body.querySelector('#logoPick').onclick=()=>body.querySelector('#logoIn').click();
-    body.querySelector('#logoIn').onchange=e=>{ const f=e.target.files[0]; if(f) read(f); };
-    ['dragenter','dragover'].forEach(ev=>lz.addEventListener(ev,e=>{e.preventDefault();lz.classList.add('over');}));
-    ['dragleave','drop'].forEach(ev=>lz.addEventListener(ev,e=>{e.preventDefault();lz.classList.remove('over');}));
-    lz.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) read(f); });
-  }
-  const lc=body.querySelector('#logoClear');
-  if(lc) lc.onclick=()=>{ THEME.logo=null; applyTheme(); renderPane(); scheduleAutosave(); };
-}
-function wireDataPane(){
-  const body=$('#paneBody'), zone=body.querySelector('#zone');
-  if(zone){
-    const read=f=>{ const r=new FileReader(); r.onload=e=>loadCSV(e.target.result,f.name); r.readAsText(f); };
-    body.querySelector('#pickBtn').onclick=()=>body.querySelector('#fileIn').click();
-    body.querySelector('#fileIn').onchange=e=>{ const f=e.target.files[0]; if(f) read(f); };
-    body.querySelector('#sampleBtn').onclick=()=>{ loadCSV(sampleCSV(),'coffee-shop-sales.csv'); say('Sample data loaded.'); };
-    ['dragenter','dragover'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.add('over');}));
-    ['dragleave','drop'].forEach(ev=>zone.addEventListener(ev,e=>{e.preventDefault();zone.classList.remove('over');}));
-    zone.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) read(f); });
-  }
-  const bind=(sel,fn)=>{ const el=body.querySelector(sel); if(el) el.onclick=fn; };
-  bind('#unloadBtn',unload);
-  bind('#addCard2',()=>addBlock('card',{}));
-  bind('#addSlice2',()=>addBlock('slicer',{}));
-  bind('#addTxt2',()=>addBlock('text',{heading:'',body:''}));
-  bind('#addImg2',()=>addBlock('image',{src:null,fit:'contain'}));
-  bind('#addFil2',addFilter);
-  bind('#pdf2',()=>window.print());
-  bind('#clearAll',()=>{ killAll(); scheduleAutosave(); });
-  bind('#saveAs',()=>saveAs());
-  bind('#expJson',exportJSON);
-  bind('#impJson',()=>body.querySelector('#jsonIn').click());
-  const ji=body.querySelector('#jsonIn');
-  if(ji) ji.onchange=e=>{ const f=e.target.files[0]; if(!f) return;
-    const r=new FileReader(); r.onload=ev=>importJSON(ev.target.result); r.readAsText(f); };
-  refreshSaveList();
 }
 
 /* ==========================================================
@@ -804,6 +426,9 @@ function restore(snap){
 }
 let autoTimer=null;
 function scheduleAutosave(){
+  /* A visitor viewing a published dashboard must never overwrite the
+     autosave of whoever is building one in the same browser. */
+  if(VIEWER) return;
   clearTimeout(autoTimer);
   autoTimer=setTimeout(async()=>{
     try{ await writeAutosave(JSON.stringify(snapshot())); }catch(e){}
@@ -840,17 +465,36 @@ async function dropSave(name){
   await removeSave(name);
   refreshSaveList();
 }
-function exportJSON(){
-  const blob=new Blob([JSON.stringify(snapshot(),null,2)],{type:'application/json'});
+function downloadJSON(obj,pretty){
+  const blob=new Blob([JSON.stringify(obj,null,pretty?2:0)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download=($('#deckTitle').textContent.trim()||'dashboard').replace(/[^\w\-]+/g,'-')+'.gratti.json';
   a.click(); URL.revokeObjectURL(a.href);
-  say('Dashboard file downloaded.');
 }
-function importJSON(text){
-  try{ restore(JSON.parse(text)); say('Dashboard imported.'); scheduleAutosave(); }
-  catch(e){ say('That file is not a Gratti dashboard.',true); }
+function exportJSON(){ downloadJSON(snapshot(),true); say('Dashboard file downloaded.'); }
+/* hoisted for registerPane(), same rule as the actions */
+async function exportJSONEnc(){
+  const pass=prompt('Choose a passphrase for this file. Whoever opens it will need it.');
+  if(pass===null) return;
+  if(pass.length<8){ say('Use a passphrase of at least 8 characters.',true); return; }
+  downloadJSON(await seal(snapshot(),pass));
+  say('Protected file downloaded. Share the passphrase separately, and keep it safe: without it nobody can open the file, including you.');
+}
+async function importJSON(text){
+  let snap;
+  try{ snap=JSON.parse(text); }
+  catch(e){ return say('That file is not a Gratti dashboard.',true); }
+  if(isSealed(snap)){
+    const pass=prompt('This dashboard is protected. Enter its passphrase.');
+    if(pass===null) return;
+    try{ snap=await unseal(snap,pass); }
+    catch(e){ return say('That passphrase did not unlock the file.',true); }
+  }
+  try{
+    if(!restore(snap)) return say('That file is not a Gratti dashboard.',true);
+    say('Dashboard imported.'); scheduleAutosave();
+  }catch(e){ say('That file is not a Gratti dashboard.',true); }
 }
 
 /* ==========================================================
@@ -931,11 +575,47 @@ window.addEventListener('resize',()=>{ if(PLOT) charts().filter(c=>is3D(c.spec.t
 
 /* boot */
 (async function boot(){
+  const slug=slugFromSearch(location.search);
+  if(slug) setViewer(true);
+  document.documentElement.classList.toggle('viewer', VIEWER);
+  if(VIEWER) $('#deckTitle').contentEditable='false';
+
   applyTheme(); renderBoard(); renderPane();
   if(!LIBS){ say('Chart libraries did not load. Refresh the page to retry.',true); return; }
+
+  /* A published dashboard: load it and stop. Never touch the autosave. */
+  if(VIEWER){
+    let snap=null;
+    try{ snap=await loadDashboard(slug); }
+    catch(e){
+      /* Unknown slug. Reopen the editor, and never list what else is
+         published: the gallery is for the dashboard owner, not visitors. */
+      setViewer(false);
+      document.documentElement.classList.remove('viewer');
+      $('#deckTitle').contentEditable='true';
+      say(`No published dashboard called “${esc(slug)}”.`,true);
+      renderBoard();
+      return;
+    }
+    if(isSealed(snap)){
+      for(let i=0;i<3&&isSealed(snap);i++){
+        const pass=prompt(i===0
+          ?'This dashboard is protected. Enter its passphrase.'
+          :'That passphrase did not unlock it. Try again.');
+        if(pass===null) break;
+        try{ snap=await unseal(snap,pass); }catch(e){}
+      }
+      if(isSealed(snap)){ say('This dashboard stays locked without its passphrase.',true); return; }
+    }
+    restore(snap);
+    return;
+  }
+
+  PUBLISHED=await loadManifest();
   try{
     const raw=await readAutosave();
     if(raw){ const snap=JSON.parse(raw);
       if(snap&&snap.blocks&&snap.blocks.length){ restore(snap); say('Picked up where you left off.'); return; } }
   }catch(e){}
+  renderBoard();
 })();

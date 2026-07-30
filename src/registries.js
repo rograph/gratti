@@ -39,3 +39,7 @@ export const FMTS=[['auto','Auto'],['currency','Currency'],['int','Whole number'
 export const DGROUP=[['raw','Exact date'],['month','Month'],['quarter','Quarter'],['year','Year']];
 export const SORTS=[['auto','Automatic'],['value-desc','Value, high to low'],['value-asc','Value, low to high'],
              ['label-asc','Label A-Z'],['label-desc','Label Z-A']];
+
+/* Layout bounds. The pane's sliders and the canvas resize logic must agree
+   on these, so they live here rather than in either module. */
+export const SPAN_MIN=3, SPAN_MAX=12, H_MIN=120, H_MAX=760;

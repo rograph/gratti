@@ -58,10 +58,33 @@ doubles as the static export.
                       and an index.js that dispatches on visual type
 - [x] `registries.js` the static option lists and the inline icon set
 - [x] `nl.js`         askAI prompt + offline keyword parser + spec clean()
-- [ ] `pane.js`       the right-hand properties panel, the last big piece
+- [x] `pane.js`       the right-hand properties panel, the last big piece
 
-Every module outside `main.js` is under 130 lines. Pipeline changes require a
-test first.
+The split is done. `main.js` is 564 lines: boot, board and block lifecycle,
+filters, KPI strip, drag and resize, persistence glue, and events. Every other
+module is under 130 lines except `pane.js` at ~450, which is fine: it is six
+template functions and their wiring, all one concern, and splitting it further
+would just scatter the panel. Pipeline changes require a test first.
+
+### How pane.js was extracted
+
+The panes call back into block and file jobs that live in `main.js`
+(`killBlock`, `loadCSV`, `saveAs`, ...), and `main.js` calls `renderPane()`.
+That circle gets the actions.js fix: `pane.js` exports `registerPane(deps)`,
+and `main.js` registers fifteen functions once at startup, right after
+`registerActions`. Same rule as before: every registered function must be a
+hoisted declaration, which is why `addChart` changed from a `const` arrow to a
+function declaration.
+
+The layout bounds (`SPAN_MIN`, `SPAN_MAX`, `H_MIN`, `H_MAX`) moved to
+`registries.js`, since the pane's sliders and the canvas resize logic must
+agree on them.
+
+Verified three ways: the 136 unit tests, ESLint `no-undef` over `src/` with
+the CDN globals declared (zero errors), and a headless-Chromium pass over the
+built file that exercises every pane: load sample data, add a chart from a
+starter chip, select, duplicate, re-sort, switch theme, add and delete a
+card. No page errors.
 
 ### The state contract
 
@@ -95,19 +118,40 @@ All four must be hoisted function declarations, not `const` arrows, or the
 registration hits the temporal dead zone. That bites at runtime, not at build
 time, so it is worth remembering when adding a fifth.
 
-### Known bug found while testing nl.js
+### The nl.js map bug, now fixed
 
-`offlineSpec` runs its type rules in order and lets the last match win, and
-the map rule matches the bare word "location". An incidental mention beats an
-explicit request, so "revenue by location as a table" returns a bubble map.
-`test/nl.test.js` pins the current behaviour under a comment, so a fix shows
-up as a failing test rather than a silent change. The fix is to only consider
-map and choropleth when nothing more explicit matched:
+`offlineSpec` ran its type rules in order and let the last match win, and the
+map rule matched the bare word "location", so "revenue by location as a
+table" returned a bubble map. The pinned test flipped to the correct
+expectation when the fix landed: map and choropleth now only run when nothing
+more explicit matched. Rules after them (pie, ranked, 3D) stay unconditional,
+so an explicit type later in the order still wins.
 
-```js
-if (type === 'bar' && /\bmap\b|location|geograph|where/.test(s) && guessLat() && guessLon())
-  type = 'map';
-```
+### The bug real data found
+
+`offlineSpec` matched column names with `includes()`, and "Venue" is a
+substring of "revenue". So on the Cooling Economy broadcast data, every chart
+built from a request mentioning revenue was silently split by all 18 venues:
+grouped bars instead of one bar per stage, and a table with a column per venue
+that was almost entirely zeros. Names are matched on word boundaries now.
+
+Worth remembering the shape of it. Any column whose name is a fragment of a
+common word hits the same trap, and nothing about the output looks like an
+error, it just looks like a badly designed dashboard.
+
+### Two bugs fixed while building viewer mode
+
+Both were invisible in the editor and obvious the moment a dashboard was on
+screen for its own sake:
+
+- `hbar` sets `indexAxis: 'y'`, which swaps which axis carries the labels and
+  which carries the numbers. The scales object hardcoded x as the category
+  axis, so every horizontal bar chart formatted its category names as
+  currency and drew gridlines on the wrong axis. The axes are now described
+  by role and assigned by orientation.
+- The KPI strip auto-picked the first three numeric columns, which on any CSV
+  with coordinates meant it led with Latitude. `state.metricCols()` now
+  excludes the columns `guessLat`/`guessLon` identify.
 
 ### Watch for missing imports
 
@@ -127,7 +171,29 @@ any move of this size. That is how the two mistakes in this step were found.
 
 ## Phase 3 (the business feature)
 
-- [ ] Read-only viewer mode (no pane, no toolbar, no editing)
+- [x] Read-only viewer mode (no pane, no toolbar, no editing). `?d=<slug>`
+      loads a published dashboard; charts stay interactive. `src/publish.js`
+      owns slug parsing and fetching, `state.VIEWER` gates the editing paths,
+      and autosave is skipped so a visitor cannot clobber an editor's work.
 - [x] Static export: one self-contained HTML file for iframe embedding.
       `vite-plugin-singlefile`, wired into the default build.
-- [ ] "Hide Gratti branding" toggle in themes
+- [x] Suggested starter dashboard. A "Build a dashboard for me" button on the
+      empty board reads the schema and builds KPI cards for the top measures
+      plus 4 to 6 charts. `askAISuggest` has the model design the set from
+      the columns and sample rows; `offlineSuggest` does it from field types
+      alone (trend, ranking, composition, map, detail), leading with the
+      money column when one exists. Both prompts share one spec shape and
+      rule list, and every spec still passes through `clean()`. The offline
+      path is under test in `test/nl.test.js`.
+- [x] Client data protection. `src/crypt.js` seals a snapshot with
+      AES-256-GCM under a PBKDF2 passphrase key (WebCrypto, no dependency).
+      Protected export in the panel produces an encrypted `.gratti.json`
+      that is safe on a public host; the viewer and importer prompt for the
+      passphrase and decrypt in the browser. Wrong passphrase or a flipped
+      byte fails closed, under test in `test/crypt.test.js`. Alongside it,
+      the build strips `dashboards/index.json` so a deployed site never
+      lists the client roster, the bad-slug path no longer renders the
+      gallery, and `npm run dashboards` indexes sealed files by slug only.
+- [ ] "Hide Gratti branding" toggle in themes. Viewer mode currently does the
+      opposite on purpose: it adds a "Built with Gratti" byline. The toggle is
+      what a white-label client will want, so both need to exist.
