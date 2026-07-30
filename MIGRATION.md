@@ -194,6 +194,9 @@ any move of this size. That is how the two mistakes in this step were found.
       the build strips `dashboards/index.json` so a deployed site never
       lists the client roster, the bad-slug path no longer renders the
       gallery, and `npm run dashboards` indexes sealed files by slug only.
-- [ ] "Hide Gratti branding" toggle in themes. Viewer mode currently does the
-      opposite on purpose: it adds a "Built with Gratti" byline. The toggle is
-      what a white-label client will want, so both need to exist.
+- [x] "Hide Gratti branding" toggle in themes. `THEME.hideBrand` rides in the
+      theme, so it saves per dashboard and a published viewer honours it: on
+      for the portfolio demo, off for a white-label client, per client. The
+      flag's snapshot round-trip is pinned in `test/persist.test.js`.
+
+Phase 3 is done.

@@ -60,6 +60,11 @@ describe('snapshot', () => {
     expect(snapshot('t', THEME).blocks).toEqual([{ kind: 'chart', spec: { type: 'bar' } }]);
   });
 
+  it('carries the white-label flag with the theme', () => {
+    const s = snapshot('t', { ...THEME, hideBrand: true });
+    expect(JSON.parse(JSON.stringify(s)).theme.hideBrand).toBe(true);
+  });
+
   it('survives a JSON round-trip', () => {
     S.setBlocks([{ id: 'b1', kind: 'card', spec: { y: 'Revenue' } }]);
     const s = snapshot('t', THEME);

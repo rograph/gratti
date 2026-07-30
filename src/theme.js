@@ -19,7 +19,7 @@ export const THEMES = {
   ink:{name:'Ink', accent:'#0B1220',
     pal:['#0B1220','#3D3AF5','#00BFA6','#FFB627','#FF5D73','#7C889D','#5D6BFF','#00A3FF']}
 };
-export let THEME = {key:'indigo', accent:THEMES.indigo.accent, pal:[...THEMES.indigo.pal], logo:null};
+export let THEME = {key:'indigo', accent:THEMES.indigo.accent, pal:[...THEMES.indigo.pal], logo:null, hideBrand:false};
 export let PAL = [...THEME.pal];
 
 /** Replace the whole theme. Callers redraw; this only stores. */

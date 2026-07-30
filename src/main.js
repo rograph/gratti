@@ -34,6 +34,9 @@ function applyTheme(){
   const r=document.documentElement.style;
   r.setProperty('--accent', THEME.accent);
   r.setProperty('--accent-soft', tint(THEME.accent, .93));
+  /* White-label: the flag rides in the theme, so it travels with the
+     snapshot and a published dashboard honours it in the viewer. */
+  document.documentElement.classList.toggle('nobrand', !!THEME.hideBrand);
   setPal(THEME.pal && THEME.pal.length ? THEME.pal : THEMES.indigo.pal);
   const brand=$('#brand');
   brand.innerHTML = THEME.logo

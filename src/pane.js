@@ -300,6 +300,10 @@ function themePane(){
       <div class="colorrow">
         <input type="color" id="accentPick" value="${THEME.accent}">
         <span class="hintline" style="margin:0">Overrides the palette's first colour.</span></div></div>
+    <div class="sect"><h4>Branding</h4>
+      <div class="toggles">
+        <button class="tg ${THEME.hideBrand?'on':''}" id="brandToggle">Hide "Built with Gratti"</button></div>
+      <p class="hintline">Removes the byline from the published dashboard. Saved with the dashboard, so it is per client.</p></div>
     <div class="sect"><h4>Client logo</h4>
       ${THEME.logo?`<div class="loaded"><img src="${THEME.logo}" style="height:26px;max-width:120px;object-fit:contain">
         <button class="act-quiet" id="logoClear">Remove</button></div>`
@@ -408,6 +412,12 @@ function wireThemePane(){
     setTheme({...THEME,key:b.dataset.theme,accent:t.accent,pal:[...t.pal]});
     applyTheme(); renderPane(); scheduleAutosave();
   });
+  const bt=body.querySelector('#brandToggle');
+  if(bt) bt.onclick=()=>{
+    THEME.hideBrand=!THEME.hideBrand;
+    bt.classList.toggle('on',THEME.hideBrand);
+    applyTheme(); scheduleAutosave();
+  };
   const pick=body.querySelector('#accentPick');
   if(pick) pick.oninput=e=>{
     THEME.accent=e.target.value; THEME.pal=[e.target.value,...THEME.pal.slice(1)]; THEME.key='custom';
